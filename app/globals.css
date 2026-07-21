@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0f172a;
+  --foreground: #e2e8f0;
+  
+  /* Asguard Security System Colors */
+  --ds-background-100: #0f172a;
+  --ds-background-200: #1e293b;
+  --ds-background-300: #334155;
+  
+  --ds-slate-100: #e2e8f0;
+  --ds-slate-200: #cbd5e1;
+  --ds-slate-300: #94a3b8;
+  --ds-slate-400: #64748b;
+  --ds-slate-500: #475569;
+  --ds-slate-600: #334155;
+  --ds-slate-700: #1e293b;
+  
+  /* Security Status Colors */
+  --ds-green-500: #10b981;
+  --ds-green-600: #059669;
+  
+  --ds-yellow-500: #eab308;
+  --ds-yellow-600: #ca8a04;
+  
+  --ds-red-500: #ef4444;
+  --ds-red-600: #dc2626;
+  
+  --ds-cyan-500: #06b6d4;
+  --ds-cyan-600: #0891b2;
+  
+  --ds-purple-500: #a855f7;
+  --ds-purple-600: #9333ea;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Asguard-specific styles */
+.asguard-border {
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.asguard-glow-green {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+}
+
+.asguard-glow-red {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+.asguard-glow-yellow {
+  box-shadow: 0 0 20px rgba(234, 179, 8, 0.3);
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 30px rgba(16, 185, 129, 0.6);
+  }
+}
+
+.bg-gray-alpha-100 {
+  background-color: var(--ds-gray-alpha-100);
+}
+
+.text-gray-900 {
+  color: var(--ds-gray-900);
+}
+
+.text-gray-1000 {
+  color: var(--ds-gray-1000);
+}
+
+.rsm-svg {
+  width: 100%;
+  height: auto;
+}
+
+.rsm-geographies path {
+  transition: fill 0.15s ease;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
