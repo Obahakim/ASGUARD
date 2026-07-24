@@ -68,11 +68,20 @@ export class EventInterceptor {
    * Handle anomaly detection event
    */
   private async handleAnomalyDetected(event: AnomalyDetectionEvent): Promise<void> {
+    const evaluation = {
+      agent_id: event.agent_id,
+      anomaly_score: event.confidence_score * 100,
+      rules_triggered: [],
+      action: event.confidence_score > 0.8 ? 'halt_and_hitl' : 'warn',
+      confidence: Math.round(event.confidence_score * 100),
+      timestamp: event.timestamp,
+    } as EvaluationResult;
+
     // Format the evaluation result
-    eventFormatter.formatEvaluation(event.evaluation);
+    eventFormatter.formatEvaluation(evaluation);
 
     // If action is warn, just log
-    if (event.evaluation.action === 'warn') {
+    if (evaluation.action === 'warn') {
       const lines = [
         '',
         '\x1b[33m⚠  WARNING: Anomaly Detected - Logged for Review\x1b[0m',
@@ -84,7 +93,7 @@ export class EventInterceptor {
     }
 
     // If action is silent_pass, only mention if requested
-    if (event.evaluation.action === 'silent_pass') {
+    if (evaluation.action === 'silent_pass') {
       return; // No output for silent pass
     }
   }

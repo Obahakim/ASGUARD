@@ -149,6 +149,8 @@ export interface HealthCheckResponse {
   daemon_connected: boolean;
   timestamp: string;
   version: string;
+  runtime: string;
+  capabilities: string[];
 }
 
 /**

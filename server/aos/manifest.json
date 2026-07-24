@@ -1,0 +1,17 @@
+{
+  "name": "asguard",
+  "displayName": "ASGUARD",
+  "type": "capsule",
+  "version": "0.1.0",
+  "description": "AOS-aligned guardian capsule for agent policy enforcement, monitoring, HITL approval, and audit visibility.",
+  "capabilities": [
+    "policy_management",
+    "event_monitoring",
+    "hitl_approval",
+    "audit_anchoring"
+  ],
+  "runtime": {
+    "engine": "astrid",
+    "bridge": "http"
+  }
+}

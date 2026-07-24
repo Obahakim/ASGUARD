@@ -45,7 +45,7 @@ cmd_start() {
     log_info "Press Ctrl+C to stop"
     echo ""
     
-    npm run dev || pnpm dev
+    npm run dev
 }
 
 # Command: status

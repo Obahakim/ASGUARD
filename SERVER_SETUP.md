@@ -11,21 +11,21 @@ The Asguard backend bridge is now ready to run! It provides:
 
 ## Installation
 
-1. **Install dependencies** (already done if you ran `pnpm install`):
+1. **Install dependencies** (already done if you ran `npm install`):
 ```bash
-pnpm install
+npm install
 ```
 
 2. **Verify TypeScript compilation**:
 ```bash
-pnpm exec tsc --noEmit -p tsconfig.server.json
+npx tsc --noEmit -p tsconfig.server.json
 ```
 
 ## Running the Backend
 
 ### Option 1: Run Both Frontend + Backend Together (Recommended)
 ```bash
-pnpm dev
+npm run dev
 ```
 
 This will start:
@@ -36,14 +36,14 @@ Both will watch for changes and automatically reload.
 
 ### Option 2: Run Backend Only
 ```bash
-pnpm dev:backend
+npm run dev:backend
 ```
 
 Runs backend server with TypeScript watch mode. Useful for testing the API independently.
 
 ### Option 3: Run Frontend Only
 ```bash
-pnpm dev:frontend
+npm run dev:frontend
 ```
 
 Runs only the Next.js frontend on port 3000.

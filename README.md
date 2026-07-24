@@ -134,20 +134,20 @@ app/
 
 ### Installation
 ```bash
-pnpm install
+npm install
 ```
 
 ### Development
 ```bash
-pnpm dev
+npm run dev
 ```
 
 The app runs on `http://localhost:3000` and includes hot module reloading for rapid development.
 
 ### Build for Production
 ```bash
-pnpm build
-pnpm start
+npm run build
+npm start
 ```
 
 ## Next Steps

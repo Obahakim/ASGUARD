@@ -74,36 +74,36 @@ export function formatRuleViolation(rule: RuleViolation, index: number): string 
 /**
  * Format evaluation result for display
  */
-export function formatEvaluationResult(eval: EvaluationResult): string[] {
+export function formatEvaluationResult(result: EvaluationResult): string[] {
   const lines: string[] = [];
   const actionColor =
-    eval.action === 'silent_pass'
+    result.action === 'silent_pass'
       ? COLORS.green
-      : eval.action === 'warn'
+      : result.action === 'warn'
         ? COLORS.yellow
         : COLORS.red;
 
   lines.push('');
   lines.push(
-    `${COLORS.bright}Anomaly Detection Result${COLORS.reset} [${eval.timestamp.split('T')[1].split('.')[0]}]`
+    `${COLORS.bright}Anomaly Detection Result${COLORS.reset} [${result.timestamp.split('T')[1].split('.')[0]}]`
   );
   lines.push(
     `${'─'.repeat(60)}`
   );
-  lines.push(`Agent: ${eval.agent_id}`);
-  lines.push(`Score: ${formatAnomalyScore(eval.anomaly_score)}/100`);
-  lines.push(`Action: ${actionColor}${eval.action.toUpperCase()}${COLORS.reset}`);
-  lines.push(`Confidence: ${eval.confidence}%`);
+  lines.push(`Agent: ${result.agent_id}`);
+  lines.push(`Score: ${formatAnomalyScore(result.anomaly_score)}/100`);
+  lines.push(`Action: ${actionColor}${result.action.toUpperCase()}${COLORS.reset}`);
+  lines.push(`Confidence: ${result.confidence}%`);
 
-  if (eval.rules_triggered.length > 0) {
+  if (result.rules_triggered.length > 0) {
     lines.push('');
-    lines.push(`${COLORS.bright}Rules Triggered (${eval.rules_triggered.length})${COLORS.reset}:`);
-    eval.rules_triggered.forEach((rule, index) => {
+    lines.push(`${COLORS.bright}Rules Triggered (${result.rules_triggered.length})${COLORS.reset}:`);
+    result.rules_triggered.forEach((rule, index) => {
       lines.push(formatRuleViolation(rule, index));
     });
   }
 
-  lines.push(${'─'.repeat(60)});
+  lines.push(`${'─'.repeat(60)}`);
   lines.push('');
 
   return lines;
@@ -277,8 +277,8 @@ export class EventFormatter {
   /**
    * Format evaluation result
    */
-  formatEvaluation(eval: EvaluationResult): void {
-    const lines = formatEvaluationResult(eval);
+  formatEvaluation(result: EvaluationResult): void {
+    const lines = formatEvaluationResult(result);
 
     lines.forEach((line) => {
       console.log(line);

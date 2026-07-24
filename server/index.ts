@@ -19,10 +19,24 @@ import {
   HITLRequestEvent,
   AgentActivityEvent,
 } from './types';
+import { CapabilityManager, defaultCapabilities } from './aos/capabilityManager';
+import { runtimeBridge } from './aos/runtimeBridge';
+import { auditAnchor } from './aos/auditAnchor';
+import { capsuleConfig } from './aos/capsuleConfig';
+import { providerRegistry } from './aos/providerRegistry';
+import { runtimeConfig } from './aos/runtimeConfig';
+import { UnicityAdapter } from './aos/unicityAdapter';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
 const HOST = process.env.ASGUARD_HOST || 'localhost';
+const runtimeName = process.env.ASGUARD_RUNTIME || 'astrid';
+process.env.ASGUARD_RUNTIME = runtimeName;
+
+const capabilityManager = new CapabilityManager(defaultCapabilities);
+capabilityManager.grant('audit_anchoring');
+runtimeBridge.connect();
+const unicityAdapter = new UnicityAdapter();
 
 // Initialize Express app
 const app = express();
@@ -53,14 +67,39 @@ logger.setBridge(bridge);
 const anomalyEngine = new AnomalyEngine();
 
 // Health check endpoint
-app.get('/api/health', (req: Request, res: Response) => {
-  const response: HealthCheckResponse = {
-    status: 'ok',
-    daemon_connected: true, // TODO: Check actual daemon connection
-    timestamp: new Date().toISOString(),
-    version: '1.0.0',
-  };
-  res.json(response);
+app.get('/api/health', async (req: Request, res: Response) => {
+  try {
+    const blueprint = await unicityAdapter.buildBlueprint();
+    const response: HealthCheckResponse & {
+      runtimeConfig: typeof runtimeConfig;
+      capsule: typeof capsuleConfig;
+      providers: ReturnType<typeof providerRegistry.list>;
+      unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
+    } = {
+      status: 'ok',
+      daemon_connected: runtimeBridge.isConnected(),
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
+      runtimeConfig,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      unicity: blueprint,
+    };
+    res.json(response);
+  } catch (error) {
+    logger.error('[Server] Error building Unicity blueprint:', { error: String(error) });
+    res.status(500).json({
+      status: 'degraded',
+      daemon_connected: runtimeBridge.isConnected(),
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
+      error: String(error),
+    });
+  }
 });
 
 // Get current policy
@@ -86,6 +125,14 @@ app.get('/api/policy', (req: Request, res: Response) => {
 // Update policy field
 app.post('/api/policy', (req: Request, res: Response) => {
   try {
+    if (!capabilityManager.can('policy_management')) {
+      res.status(403).json({
+        success: false,
+        error: 'Policy management capability is not authorized for this runtime',
+      });
+      return;
+    }
+
     const { field, value } = req.body as PolicyUpdateRequest;
 
     if (!field || value === undefined) {
@@ -107,6 +154,7 @@ app.post('/api/policy', (req: Request, res: Response) => {
       old_value: null, // TODO: Track old value in policyStore
       new_value: value,
     };
+    auditAnchor.record('policy_update', { field, value, runtime: runtimeName });
     bridge.broadcastEvent(event);
 
     const response: PolicyResponse = {
@@ -175,6 +223,14 @@ app.post('/api/events/agent-activity', async (req: Request, res: Response) => {
       contract_address,
     } = req.body;
 
+    if (!capabilityManager.can('event_monitoring')) {
+      res.status(403).json({
+        success: false,
+        error: 'Event monitoring capability is not authorized for this runtime',
+      });
+      return;
+    }
+
     const event: AgentActivityEvent = {
       type: 'agent_activity',
       timestamp: new Date().toISOString(),
@@ -185,6 +241,7 @@ app.post('/api/events/agent-activity', async (req: Request, res: Response) => {
       risk_level,
       details: details || {},
     };
+    auditAnchor.record('agent_activity', { agent_id, action, risk_level, runtime: runtimeName });
 
     // Get current policy
     const policy = policyStore.getPolicy();
@@ -278,6 +335,14 @@ app.post('/api/events/security-violation', (req: Request, res: Response) => {
       context,
     } = req.body;
 
+    if (!capabilityManager.can('hitl_approval')) {
+      res.status(403).json({
+        success: false,
+        error: 'HITL approval capability is not authorized for this runtime',
+      });
+      return;
+    }
+
     const event: Event = {
       type: 'security_violation',
       timestamp: new Date().toISOString(),
@@ -288,6 +353,7 @@ app.post('/api/events/security-violation', (req: Request, res: Response) => {
       requires_hitl: requires_hitl || false,
       context: context || {},
     };
+    auditAnchor.record('security_violation', { agent_id, violation_type, severity, runtime: runtimeName });
 
     bridge.broadcastEvent(event);
     logger.broadcastEvent(event);
@@ -342,12 +408,28 @@ app.post('/api/events/security-violation', (req: Request, res: Response) => {
 });
 
 // Get server stats
-app.get('/api/stats', (req: Request, res: Response) => {
-  res.json({
-    connected_clients: bridge.getClientCount(),
-    recent_events: bridge.getRecentEvents(10),
-    uptime_ms: process.uptime() * 1000,
-  });
+app.get('/api/stats', async (req: Request, res: Response) => {
+  try {
+    const blueprint = await unicityAdapter.buildBlueprint();
+    res.json({
+      connected_clients: bridge.getClientCount(),
+      recent_events: bridge.getRecentEvents(10),
+      uptime_ms: process.uptime() * 1000,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      unicity: blueprint,
+    });
+  } catch (error) {
+    logger.error('[Server] Error building Unicity blueprint for stats:', { error: String(error) });
+    res.status(500).json({
+      connected_clients: bridge.getClientCount(),
+      recent_events: bridge.getRecentEvents(10),
+      uptime_ms: process.uptime() * 1000,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      error: String(error),
+    });
+  }
 });
 
 // Phase 3: Anomaly engine endpoints
