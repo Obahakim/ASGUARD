@@ -150,19 +150,28 @@ npm run build
 npm start
 ```
 
+## Pilot readiness
+
+ASGUARD is currently a local security-control prototype. The end-to-end AgentSphere transaction pilot is being built fail-closed: missing Unicity credentials make live validation unavailable rather than fabricating success. Configure `UNICITY_NETWORK`, `UNICITY_WALLET_API_URL`, `UNICITY_ORACLE_API_KEY`, and optionally `UNICITY_DEVICE_ID` only through the runtime environment; never commit wallet or oracle material.
+
+Current pilot status:
+- Implemented: typed transaction intent and approval domain, runtime artifact protection, environment-based Unicity configuration.
+- Requires configured services: live AgentSphere wallet authentication, validation, simulation, submission, and finality.
+- Local fallback only: existing JSON policy/audit stores and demo dashboard fixtures.
+- Not production-ready: mainnet operation, multisig governance, externally anchored audit evidence, complete daemon integration, and independent security review.
+
 ## Next Steps
 
-1. **Connect to Backend**: Integrate with Astrid daemon via WebSocket or REST API
-2. **Add Authentication**: Implement operator login and session management
-3. **Database Integration**: Store incident history and audit logs in Neon/Supabase
-4. **Real-time Updates**: Add WebSocket connection for live agent monitoring
-5. **Advanced Analytics**: Charts and metrics for security trends
-6. **Email Alerts**: Notification system for high-priority incidents
-7. **API Endpoints**: Create backend routes for rule management
+1. Implement AgentSphere wallet challenge/signature verification for REST and WebSocket operators.
+2. Persist transaction intents, approvals, incidents, and audit records in Neon.
+3. Connect the transaction-intent state machine to Astrid execution and fail closed on unavailable validation.
+4. Add live Unicity validation, simulation, submission, and finality tracking.
+5. Replace demo dashboard data with authenticated API and WebSocket state.
+6. Add adversarial tests, CI secret scanning, monitoring, multisig administration, and an independent security review before mainnet.
 
 ## Template Audit Results
 
-✅ **Secure** - No hardcoded credentials, no suspicious dependencies, proper TypeScript/React patterns, no XSS/SQL injection vulnerabilities detected.
+This repository is a pilot scaffold, not a security certification. Do not treat its current local stores, dashboard fixtures, or adapter status as evidence of mainnet readiness.
 
 ---
 

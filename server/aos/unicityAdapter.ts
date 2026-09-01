@@ -9,31 +9,58 @@ export interface UnicityBlueprint {
     deviceId: string;
   };
   oracles: string[];
+  status: 'configured' | 'unavailable';
+  reason?: string;
+}
+
+function requiredEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value || undefined;
 }
 
 export class UnicityAdapter {
   async buildBlueprint(): Promise<UnicityBlueprint> {
+    const network = requiredEnv('UNICITY_NETWORK') ?? 'testnet2';
+    const walletApiUrl = requiredEnv('UNICITY_WALLET_API_URL') ?? 'https://wallet-api.unicity.network';
+    const oracleApiKey = requiredEnv('UNICITY_ORACLE_API_KEY');
+
+    if (!oracleApiKey) {
+      return {
+        network,
+        walletApi: {
+          baseUrl: walletApiUrl,
+          network,
+          deviceId: requiredEnv('UNICITY_DEVICE_ID') ?? 'asguard-runtime',
+        },
+        oracles: ['oracle:missing'],
+        status: 'unavailable',
+        reason: 'UNICITY_ORACLE_API_KEY is not configured; live validation is fail-closed.',
+      };
+    }
+
     const baseProviders = createNodeProviders({
-      network: 'testnet',
-      dataDir: './.sphere-data',
-      tokensDir: './.sphere-tokens',
-      oracle: { apiKey: 'sk_ddc3cfcc001e4a28ac3fad7407f99590' },
+      network,
+      dataDir: requiredEnv('UNICITY_DATA_DIR') ?? './.sphere-data',
+      tokensDir: requiredEnv('UNICITY_TOKENS_DIR') ?? './.sphere-tokens',
+      oracle: { apiKey: oracleApiKey },
     });
 
     const providers = createWalletApiProviders(baseProviders, {
-      baseUrl: 'https://wallet-api.unicity.network',
-      network: 'testnet2',
-      deviceId: 'asguard-runtime',
+      baseUrl: walletApiUrl,
+      network,
+      deviceId: requiredEnv('UNICITY_DEVICE_ID') ?? 'asguard-runtime',
     });
 
     return {
-      network: 'testnet',
+      network,
       walletApi: {
-        baseUrl: 'https://wallet-api.unicity.network',
-        network: 'testnet2',
-        deviceId: 'asguard-runtime',
+        baseUrl: walletApiUrl,
+        network,
+        deviceId: requiredEnv('UNICITY_DEVICE_ID') ?? 'asguard-runtime',
       },
       oracles: [providers.oracle ? 'oracle:configured' : 'oracle:missing'],
+      status: providers.oracle ? 'configured' : 'unavailable',
+      reason: providers.oracle ? undefined : 'Unicity oracle provider is unavailable.',
     };
   }
 }

@@ -203,3 +203,60 @@ export interface ContractValidationResult {
   details: Record<string, unknown>;
   checked_at: string;
 }
+
+export type TransactionIntentStatus =
+  | 'created'
+  | 'evaluating'
+  | 'blocked'
+  | 'awaiting_approval'
+  | 'approved'
+  | 'authorized'
+  | 'submitted'
+  | 'confirmed'
+  | 'rejected'
+  | 'expired'
+  | 'failed';
+
+export interface TransactionIntent {
+  id: string;
+  idempotency_key: string;
+  correlation_id: string;
+  agent_id: string;
+  wallet_id: string;
+  network: string;
+  action: string;
+  resource: string;
+  payload_hash: string;
+  amount?: string;
+  status: TransactionIntentStatus;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  policy_version?: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TransactionSimulation {
+  status: 'passed' | 'failed' | 'unavailable';
+  payload_hash: string;
+  network: string;
+  reason?: string;
+  checked_at: string;
+}
+
+export interface AgentSphereOperator {
+  wallet_address: string;
+  role: 'operator' | 'auditor' | 'admin';
+  session_id: string;
+  authenticated_at: string;
+  expires_at: string;
+}
+
+export interface ApprovalRequest {
+  request_id: string;
+  intent_id: string;
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  scope: 'once' | 'session';
+  operator_wallet?: string;
+  expires_at: string;
+}
