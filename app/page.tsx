@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useBridgeConnection } from '../hooks/useBridgeConnection';
 import Navbar from './components/Navbar';
 import Tabs from './components/Tabs';
 import ActivityFeed from './components/ActivityFeed';
@@ -11,6 +12,8 @@ import ApprovalModal from './components/ApprovalModal';
 export default function Home() {
   const [activeTab, setActiveTab] = useState('overview');
   const [showModal, setShowModal] = useState(false);
+  const { events, isConnected } = useBridgeConnection();
+  const auditEvents = events.filter((event) => event.type === 'audit_log');
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -65,10 +68,17 @@ export default function Home() {
         {activeTab === 'logs' && (
           <div className="bg-slate-900/50 rounded-lg border asguard-border p-8 backdrop-blur">
             <h3 className="text-2xl font-bold text-slate-100 mb-6">Audit Logs</h3>
-            <div className="space-y-2">
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="p-3 bg-slate-800/50 rounded-lg border asguard-border text-sm text-slate-300 font-mono">
-                  [14:32:18] Agent: Trader-Bot-01 | Action: Execute Trade | Status: Allowed | Risk: Low
+            <div className="mb-4 text-sm text-slate-400">
+              Live bridge: <span className={isConnected ? 'text-emerald-400' : 'text-amber-400'}>{isConnected ? 'connected' : 'disconnected'}</span>
+            </div>
+            <div className="flex flex-col gap-2">
+              {auditEvents.length === 0 ? (
+                <div className="rounded-lg border asguard-border bg-slate-800/50 p-4 text-sm text-slate-400">
+                  No audit events received yet. The dashboard is no longer showing fabricated log entries.
+                </div>
+              ) : auditEvents.slice(-25).reverse().map((event) => (
+                <div key={event.id} className="rounded-lg border asguard-border bg-slate-800/50 p-3 text-sm text-slate-300 font-mono">
+                  [{new Date(event.timestamp).toLocaleTimeString()}] {event.agent_id ?? 'system'} | {event.action} | {event.status}
                 </div>
               ))}
             </div>
