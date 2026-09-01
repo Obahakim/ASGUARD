@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { TransactionIntent, TransactionIntentStatus, TransactionSimulation } from './types';
+import { persistIntent } from './neonStore';
 
 const intents = new Map<string, TransactionIntent>();
 
@@ -24,6 +25,7 @@ export function createTransactionIntent(input: Omit<TransactionIntent, 'id' | 's
   const timestamp = now();
   const intent: TransactionIntent = { ...input, id: `intent_${crypto.randomUUID()}`, status: 'created', created_at: timestamp, updated_at: timestamp };
   intents.set(intent.id, intent);
+  void persistIntent(intent).catch(() => undefined);
   return intent;
 }
 
@@ -33,6 +35,7 @@ export function transitionTransactionIntent(id: string, status: TransactionInten
   if (!transitions[intent.status].includes(status)) throw new Error(`invalid transition: ${intent.status} -> ${status}`);
   const updated = { ...intent, status, updated_at: now() };
   intents.set(id, updated);
+  void persistIntent(updated).catch(() => undefined);
   return updated;
 }
 
