@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { verifySignedMessage } from '@unicitylabs/sphere-sdk';
 import type { AgentSphereOperator } from '../types';
 
 type Challenge = {
@@ -39,10 +40,21 @@ export async function verifyWalletChallenge(input: {
   if (challenge.wallet_address !== input.wallet_address.trim()) throw new Error('wallet does not match challenge');
   if (!input.signature.trim()) throw new Error('signature is required');
   if (input.origin.trim() === '') throw new Error('origin is required');
-  if (process.env.AGENTSPHERE_SIGNATURE_VERIFIER !== 'configured') {
-    throw new Error('AgentSphere signature verifier is not configured; authentication denied');
-  }
-  throw new Error('AgentSphere verifier adapter is not implemented for this runtime');
+  if (challenge.message.includes(`Origin: ${input.origin.trim()}`) === false) throw new Error('origin does not match challenge');
+  const valid = verifySignedMessage(challenge.message, input.signature.trim(), input.wallet_address.trim());
+  if (!valid) throw new Error('invalid AgentSphere wallet signature');
+
+  const sessionId = crypto.randomBytes(32).toString('base64url');
+  const authenticatedAt = new Date();
+  const operator: AgentSphereOperator = {
+    wallet_address: input.wallet_address.trim(),
+    role: 'operator',
+    session_id: sessionId,
+    authenticated_at: authenticatedAt.toISOString(),
+    expires_at: new Date(authenticatedAt.getTime() + SESSION_TTL_MS).toISOString(),
+  };
+  sessions.set(sessionId, operator);
+  return operator;
 }
 
 export function getOperatorFromSession(sessionId: string | undefined): AgentSphereOperator | undefined {
