@@ -26,6 +26,7 @@ import { capsuleConfig } from './aos/capsuleConfig';
 import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
 import { UnicityAdapter } from './aos/unicityAdapter';
+import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -65,6 +66,25 @@ logger.setBridge(bridge);
 
 // Initialize anomaly engine (Phase 3)
 const anomalyEngine = new AnomalyEngine();
+
+// AgentSphere wallet authentication. Challenge responses are single-use and fail closed.
+app.post('/api/auth/challenge', (req: Request, res: Response) => {
+  try {
+    const { wallet_address, origin } = req.body as { wallet_address?: string; origin?: string };
+    res.json(createWalletChallenge(wallet_address ?? '', origin ?? ''));
+  } catch (error) {
+    res.status(400).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/auth/verify', async (req: Request, res: Response) => {
+  try {
+    const operator = await verifyWalletChallenge(req.body);
+    res.json({ success: true, operator });
+  } catch (error) {
+    res.status(401).json({ success: false, error: String(error) });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health', async (req: Request, res: Response) => {
