@@ -27,6 +27,7 @@ import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
 import { UnicityAdapter } from './aos/unicityAdapter';
 import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
+import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -84,6 +85,33 @@ app.post('/api/auth/verify', async (req: Request, res: Response) => {
   } catch (error) {
     res.status(401).json({ success: false, error: String(error) });
   }
+});
+
+// Transaction intent lifecycle. Idempotency prevents duplicate execution requests.
+app.get('/api/transactions', (_req: Request, res: Response) => res.json({ success: true, intents: listTransactionIntents() }));
+
+app.post('/api/transactions', (req: Request, res: Response) => {
+  try {
+    const intent = createTransactionIntent(req.body);
+    res.status(201).json({ success: true, intent });
+  } catch (error) {
+    res.status(400).json({ success: false, error: String(error) });
+  }
+});
+
+app.post('/api/transactions/:id/transition', (req: Request, res: Response) => {
+  try {
+    const intent = transitionTransactionIntent(req.params.id, req.body.status);
+    res.json({ success: true, intent });
+  } catch (error) {
+    res.status(409).json({ success: false, error: String(error) });
+  }
+});
+
+app.get('/api/transactions/:id', (req: Request, res: Response) => {
+  const intent = getTransactionIntent(req.params.id);
+  if (!intent) { res.status(404).json({ success: false, error: 'transaction intent not found' }); return; }
+  res.json({ success: true, intent });
 });
 
 // Health check endpoint
