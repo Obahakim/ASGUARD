@@ -22,27 +22,10 @@ export class UnicityAdapter {
   async buildBlueprint(): Promise<UnicityBlueprint> {
     const network = requiredEnv('UNICITY_NETWORK') ?? 'testnet2';
     const walletApiUrl = requiredEnv('UNICITY_WALLET_API_URL') ?? 'https://wallet-api.unicity.network';
-    const oracleApiKey = requiredEnv('UNICITY_ORACLE_API_KEY');
-
-    if (!oracleApiKey) {
-      return {
-        network,
-        walletApi: {
-          baseUrl: walletApiUrl,
-          network,
-          deviceId: requiredEnv('UNICITY_DEVICE_ID') ?? 'asguard-runtime',
-        },
-        oracles: ['oracle:missing'],
-        status: 'unavailable',
-        reason: 'UNICITY_ORACLE_API_KEY is not configured; live validation is fail-closed.',
-      };
-    }
-
     const baseProviders = createNodeProviders({
       network,
       dataDir: requiredEnv('UNICITY_DATA_DIR') ?? './.sphere-data',
       tokensDir: requiredEnv('UNICITY_TOKENS_DIR') ?? './.sphere-tokens',
-      oracle: { apiKey: oracleApiKey },
     });
 
     const providers = createWalletApiProviders(baseProviders, {

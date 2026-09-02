@@ -152,7 +152,7 @@ npm start
 
 ## Pilot readiness
 
-ASGUARD is currently a local security-control prototype. The end-to-end AgentSphere transaction pilot is being built fail-closed: missing Unicity credentials make live validation unavailable rather than fabricating success. Configure `UNICITY_NETWORK`, `UNICITY_WALLET_API_URL`, `UNICITY_ORACLE_API_KEY`, and optionally `UNICITY_DEVICE_ID` only through the runtime environment; never commit wallet or oracle material.
+ASGUARD is currently a local security-control prototype. The end-to-end AgentSphere transaction pilot is being built fail-closed: unavailable Unicity services make live validation unavailable rather than fabricating success. Configure `UNICITY_NETWORK`, `UNICITY_WALLET_API_URL`, and `UNICITY_DEVICE_ID` only through the runtime environment; AgentSphere uses wallet signatures rather than a separate Oracle API key. Never commit wallet material.
 
 Current pilot status:
 - Implemented: typed transaction intent and approval domain, runtime artifact protection, environment-based Unicity configuration.
