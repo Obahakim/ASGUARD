@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, memo, useState } from "react";
-import { ComposableMap, Geographies, Marker } from "react-simple-maps";
 import { motion, AnimatePresence } from "framer-motion";
 import { geoMercator } from "d3-geo";
 import dottedMapData from "../data/dotted-map-data.json";
@@ -134,33 +133,32 @@ const AnimatedPixel = memo(
 AnimatedPixel.displayName = "AnimatedPixel";
 
 const EdgeMarker = memo(
-  ({ marker, delay, onHover }: { marker: (typeof regionMarkers)[0]; delay: number; onHover: (marker: (typeof regionMarkers)[0] | null) => void }) => (
-    <Marker coordinates={marker.coordinates}>
-      <motion.g
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: 1.5, opacity: 1 }}
-        transition={{
-          type: "spring",
-          stiffness: 260,
-          damping: 20,
-          delay,
-        }}
-        onMouseEnter={() => onHover(marker)}
-        onMouseLeave={() => onHover(null)}
-        style={{ cursor: "pointer", pointerEvents: "auto" }}
-      >
-        <polygon
-          data-edge={marker.id}
-          data-lat={marker.coordinates[1]}
-          data-lng={marker.coordinates[0]}
-          className="fill-[var(--ds-gray-1000)] stroke-[var(--ds-background-100)]"
-          strokeWidth={1}
-          strokeOpacity={0.5}
-          style={{ paintOrder: "stroke" }}
-          points="0,-2.3 -2,1.2 2,1.2"
-        />
-      </motion.g>
-    </Marker>
+  ({ marker, point, delay, onHover }: { marker: (typeof regionMarkers)[0]; point: [number, number]; delay: number; onHover: (marker: (typeof regionMarkers)[0] | null) => void }) => (
+    <motion.g
+      initial={{ scale: 0, opacity: 0 }}
+      animate={{ scale: 1.5, opacity: 1 }}
+      transition={{
+        type: "spring",
+        stiffness: 260,
+        damping: 20,
+        delay,
+      }}
+      transform={`translate(${point[0]} ${point[1]})`}
+      onMouseEnter={() => onHover(marker)}
+      onMouseLeave={() => onHover(null)}
+      style={{ cursor: "pointer", pointerEvents: "auto" }}
+    >
+      <polygon
+        data-edge={marker.id}
+        data-lat={marker.coordinates[1]}
+        data-lng={marker.coordinates[0]}
+        className="fill-[var(--ds-gray-1000)] stroke-[var(--ds-background-100)]"
+        strokeWidth={1}
+        strokeOpacity={0.5}
+        style={{ paintOrder: "stroke" }}
+        points="0,-2.3 -2,1.2 2,1.2"
+      />
+    </motion.g>
   )
 );
 EdgeMarker.displayName = "EdgeMarker";
@@ -265,29 +263,25 @@ export default function DottedMap({ width = 1000, height = 560 }: DottedMapProps
       </svg>
 
       <div className="absolute inset-0 pointer-events-none">
-        <ComposableMap
-          projection="geoMercator"
-          projectionConfig={{
-            scale: 140,
-            center: [15, 25],
-            rotate: [0, 0, 0],
-          }}
-          width={width}
-          height={height}
-          style={{ width: "100%", height: "auto" }}
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full h-auto"
+          aria-label="ASGUARD monitored regions"
         >
-          <Geographies geography="https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json">
-            {() => null}
-          </Geographies>
-          {regionMarkers.map((marker, index) => (
-            <EdgeMarker
-              key={marker.id}
-              marker={marker}
-              delay={markerDelays[index]}
-              onHover={handleMarkerHover}
-            />
-          ))}
-        </ComposableMap>
+          {regionMarkers.map((marker, index) => {
+            const point = projection(marker.coordinates);
+            if (!point) return null;
+            return (
+              <EdgeMarker
+                key={marker.id}
+                marker={marker}
+                point={point}
+                delay={markerDelays[index]}
+                onHover={handleMarkerHover}
+              />
+            );
+          })}
+        </svg>
       </div>
 
       <AnimatePresence>

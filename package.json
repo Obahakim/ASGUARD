@@ -39,7 +39,6 @@
     "prop-types": "latest",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "react-simple-maps": "^3.0.0",
     "tailwind-merge": "3.4.0",
     "tailwindcss-animate": "1.0.7",
     "topojson-client": "^3.1.0",
