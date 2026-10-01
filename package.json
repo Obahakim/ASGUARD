@@ -2,11 +2,14 @@
   "name": "black-friday-map",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build": "next build",
-    "dev": "concurrently \"next dev\" \"tsx watch server/index.ts\"",
+    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch server/index.ts\"",
     "dev:frontend": "next dev",
-    "dev:backend": "tsx watch server/index.ts",
+    "dev:backend": "node --env-file=.env --import tsx --watch server/index.ts",
     "lint": "eslint",
     "start": "next start",
     "backend:start": "node dist/server/index.js",

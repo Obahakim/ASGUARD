@@ -2,7 +2,7 @@ import { AgentActivityEvent, EvaluationResult, AsguardPolicy, AnomalyDetectionEv
 import { ProfileManager } from './profileManager';
 import { Evaluator } from './evaluator';
 import contractValidator from './contractValidator';
-import AuditChain from './auditChain';
+import { AuditChain } from './auditChain';
 import { logger } from './logger';
 
 /**
@@ -12,10 +12,12 @@ import { logger } from './logger';
 export class AnomalyEngine {
   private profileManager: ProfileManager;
   private evaluator: Evaluator;
+  private auditChain: AuditChain;
 
   constructor() {
     this.profileManager = new ProfileManager();
     this.evaluator = new Evaluator(this.profileManager, contractValidator);
+    this.auditChain = new AuditChain();
   }
 
   /**
@@ -44,7 +46,7 @@ export class AnomalyEngine {
     const evaluation = await this.evaluator.evaluate(activity, metadata, policy);
 
     // Step 3: Add to audit chain
-    const auditEntry = AuditChain.addEntry(
+    const auditEntry = this.auditChain.addEntry(
       activity.id,
       activity.agent_id,
       activity.action,
@@ -89,7 +91,7 @@ export class AnomalyEngine {
   getDiagnostics() {
     return {
       profiles: this.profileManager.getStats(),
-      audit_chain: AuditChain.getStats(),
+      audit_chain: this.auditChain.getStats(),
       contracts: contractValidator.getStats(),
       timestamp: new Date().toISOString(),
     };
@@ -114,7 +116,7 @@ export class AnomalyEngine {
    * Verify audit chain integrity
    */
   verifyAuditChain(): boolean {
-    const valid = AuditChain.verifyChainIntegrity();
+    const valid = this.auditChain.verifyChainIntegrity();
     if (!valid) {
       logger.error('[AnomalyEngine] Audit chain integrity check failed');
     }
@@ -125,7 +127,7 @@ export class AnomalyEngine {
    * Export audit trail for compliance
    */
   exportAuditTrail() {
-    return AuditChain.exportChain();
+    return this.auditChain.exportChain();
   }
 }
 

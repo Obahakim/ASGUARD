@@ -2,9 +2,10 @@
 
 ## Overview
 
-The Asguard backend bridge is now ready to run! It provides:
+The Asguard backend bridge provides:
 - ✅ REST API on `http://localhost:8080/api/*`
-- ✅ WebSocket real-time events on `ws://localhost:8080/ws`
+- ✅ Role-protected REST API with named service identities
+- ⚠️ WebSocket real-time events on `ws://localhost:8080/ws` (currently unauthenticated; keep loopback-only)
 - ✅ Local policy file management at `~/.astrid/asguard_policy.json`
 - ✅ Terminal-based HITL approval prompts
 - ✅ Full TypeScript type safety
@@ -19,6 +20,41 @@ npm install
 2. **Verify TypeScript compilation**:
 ```bash
 npx tsc --noEmit -p tsconfig.server.json
+```
+
+## Configure API identities
+
+The backend requires `ASGUARD_API_CREDENTIALS` and `ASGUARD_AUDIT_KEY` before startup. Copy `.env.example` to `.env` and replace the short placeholders with distinct random secrets of at least 32 bytes. `.env` is ignored by Git, and the backend development scripts load it automatically. For deployment, inject the values through a secret manager instead. Do not commit secrets.
+
+`ASGUARD_API_CREDENTIALS` is a JSON array of `{ "id", "token", "roles" }` records. Supported roles are `runtime`, `operator`, `auditor`, and `admin`:
+- `runtime`: submit agent activity and security-violation events
+- `operator` and `auditor`: read health, policy, diagnostics, stats, and audit data
+- `admin`: read data, submit events, update policy, and reset profiles
+
+Example structure only; replace both token placeholders with separate generated secrets:
+```json
+[
+  { "id": "runtime-local", "token": "<runtime-secret>", "roles": ["runtime"] },
+  { "id": "admin-local", "token": "<admin-secret>", "roles": ["admin", "operator", "auditor"] }
+]
+```
+
+Alternatively, for local development in Windows PowerShell, generate fresh values in the current terminal before starting the backend:
+```powershell
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$runtimeBytes = New-Object byte[] 32
+$adminBytes = New-Object byte[] 32
+$auditBytes = New-Object byte[] 32
+$rng.GetBytes($runtimeBytes)
+$rng.GetBytes($adminBytes)
+$rng.GetBytes($auditBytes)
+$runtimeToken = [Convert]::ToBase64String($runtimeBytes)
+$adminToken = [Convert]::ToBase64String($adminBytes)
+$env:ASGUARD_AUDIT_KEY = [Convert]::ToBase64String($auditBytes)
+$env:ASGUARD_API_CREDENTIALS = @(
+  @{ id = 'runtime-local'; token = $runtimeToken; roles = @('runtime') },
+  @{ id = 'admin-local'; token = $adminToken; roles = @('admin', 'operator', 'auditor') }
+) | ConvertTo-Json -Compress
 ```
 
 ## Running the Backend
@@ -52,7 +88,7 @@ Runs only the Next.js frontend on port 3000.
 
 ### 1. Check Health Status
 ```bash
-curl http://localhost:8080/api/health
+curl -H "Authorization: Bearer <admin-token>" http://localhost:8080/api/health
 ```
 
 **Response:**
@@ -67,7 +103,7 @@ curl http://localhost:8080/api/health
 
 ### 2. Get Current Policy
 ```bash
-curl http://localhost:8080/api/policy
+curl -H "Authorization: Bearer <admin-token>" http://localhost:8080/api/policy
 ```
 
 **Response:**
@@ -90,6 +126,7 @@ curl http://localhost:8080/api/policy
 ```bash
 curl -X POST http://localhost:8080/api/policy \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
   -d '{"field": "max_auto_trade_usd", "value": 50000}'
 ```
 
@@ -97,6 +134,7 @@ curl -X POST http://localhost:8080/api/policy \
 ```bash
 curl -X POST http://localhost:8080/api/events/agent-activity \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <runtime-token>" \
   -d '{
     "agent_id": "trader-bot-01",
     "agent_name": "Trader Bot",
@@ -112,6 +150,7 @@ Check the terminal running `pnpm dev:backend` - you should see colored event log
 ```bash
 curl -X POST http://localhost:8080/api/events/security-violation \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <runtime-token>" \
   -d '{
     "agent_id": "trader-bot-01",
     "violation_type": "unusual_trade_pattern",
@@ -153,6 +192,8 @@ Connect to WebSocket:
 wscat -c ws://localhost:8080/ws
 ```
 
+The WebSocket endpoint is not authenticated yet. Use it only for local development and do not expose the backend port to an untrusted network.
+
 Subscribe to events:
 ```json
 {"type":"subscribe","payload":{"event_types":["agent_activity","security_violation"]}}
@@ -162,7 +203,7 @@ You'll receive real-time events as they happen!
 
 ### 7. Get Server Stats
 ```bash
-curl http://localhost:8080/api/stats | jq
+curl -H "Authorization: Bearer <admin-token>" http://localhost:8080/api/stats | jq
 ```
 
 **Response:**
@@ -243,7 +284,7 @@ ASGUARD_PORT=8081 pnpm dev:backend
 ```
 
 ### WebSocket Connection Failed
-- Verify backend is running: `curl http://localhost:8080/api/health`
+- Verify backend is running with an authorized admin token: `curl -H "Authorization: Bearer <admin-token>" http://localhost:8080/api/health`
 - Check browser console for connection errors
 - Ensure no firewall blocking localhost:8080
 
@@ -267,6 +308,12 @@ ASGUARD_PORT=8080
 # Backend host (default: localhost)
 ASGUARD_HOST=localhost
 
+# Required: JSON array of named credentials and roles
+ASGUARD_API_CREDENTIALS='[{"id":"runtime-local","token":"<runtime-secret>","roles":["runtime"]},{"id":"admin-local","token":"<admin-secret>","roles":["admin","operator","auditor"]}]'
+
+# Required: random audit signing key, at least 32 bytes
+ASGUARD_AUDIT_KEY='<audit-secret>'
+
 # Home directory (for policy file location)
 HOME=/home/user
 ```
@@ -275,7 +322,7 @@ HOME=/home/user
 
 1. **Start the servers**: `pnpm dev`
 2. **Open dashboard**: `http://localhost:3000`
-3. **Test API endpoint**: `curl http://localhost:8080/api/health`
+3. **Test API endpoint**: `curl -H "Authorization: Bearer <admin-token>" http://localhost:8080/api/health`
 4. **Trigger test event**: Use the curl commands above
 5. **Watch terminal**: See color-coded logs as events flow through
 

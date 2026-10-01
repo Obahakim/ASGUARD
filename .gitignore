@@ -16,8 +16,27 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
-.env*
+# environment files; keep the safe template versioned
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# local secrets and private keys
+/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# generated local audit and policy data
+/asguard_audit_*.json
+/audit_chain.json
+/asguard_policy.json
+
+# local logs
+*.log
 
 # vercel
 .vercel

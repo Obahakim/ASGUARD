@@ -10,7 +10,7 @@ import { policyStore } from './policyStore';
 import { logger } from './logger';
 import { hitlHandler } from './hitlHandler';
 import AnomalyEngine from './anomalyEngine';
-import AuditChain from './auditChain';
+import { ApiAuthenticator, parseApiCredentials } from './auth';
 import {
   PolicyUpdateRequest,
   PolicyResponse,
@@ -32,6 +32,7 @@ const PORT = process.env.ASGUARD_PORT || 8080;
 const HOST = process.env.ASGUARD_HOST || 'localhost';
 const runtimeName = process.env.ASGUARD_RUNTIME || 'astrid';
 process.env.ASGUARD_RUNTIME = runtimeName;
+const apiAuthenticator = new ApiAuthenticator(parseApiCredentials());
 
 const capabilityManager = new CapabilityManager(defaultCapabilities);
 capabilityManager.grant('audit_anchoring');
@@ -43,14 +44,11 @@ const app = express();
 const httpServer = http.createServer(app);
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
 // CORS middleware
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Asguard-Key');
 
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
@@ -58,6 +56,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
   }
 });
+
+app.use('/api', apiAuthenticator.authenticationMiddleware());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Initialize WebSocket bridge
 const bridge = new WebSocketBridge(httpServer, PORT as number);
@@ -67,7 +69,7 @@ logger.setBridge(bridge);
 const anomalyEngine = new AnomalyEngine();
 
 // Health check endpoint
-app.get('/api/health', async (req: Request, res: Response) => {
+app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
     const response: HealthCheckResponse & {
@@ -103,7 +105,7 @@ app.get('/api/health', async (req: Request, res: Response) => {
 });
 
 // Get current policy
-app.get('/api/policy', (req: Request, res: Response) => {
+app.get('/api/policy', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
   try {
     const policy = policyStore.getPolicy();
     const response: PolicyResponse = {
@@ -123,7 +125,7 @@ app.get('/api/policy', (req: Request, res: Response) => {
 });
 
 // Update policy field
-app.post('/api/policy', (req: Request, res: Response) => {
+app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
   try {
     if (!capabilityManager.can('policy_management')) {
       res.status(403).json({
@@ -154,7 +156,12 @@ app.post('/api/policy', (req: Request, res: Response) => {
       old_value: null, // TODO: Track old value in policyStore
       new_value: value,
     };
-    auditAnchor.record('policy_update', { field, value, runtime: runtimeName });
+    auditAnchor.record('policy_update', {
+      field,
+      value,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
     bridge.broadcastEvent(event);
 
     const response: PolicyResponse = {
@@ -176,9 +183,13 @@ app.post('/api/policy', (req: Request, res: Response) => {
 });
 
 // Reset policy to defaults
-app.post('/api/policy/reset', (req: Request, res: Response) => {
+app.post('/api/policy/reset', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
   try {
     const policy = policyStore.reset();
+    auditAnchor.record('policy_reset', {
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
 
     // Broadcast reset event
     const event: Event = {
@@ -209,7 +220,7 @@ app.post('/api/policy/reset', (req: Request, res: Response) => {
 });
 
 // Simulate agent activity (for testing)
-app.post('/api/events/agent-activity', async (req: Request, res: Response) => {
+app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
   try {
     const {
       agent_id,
@@ -241,7 +252,13 @@ app.post('/api/events/agent-activity', async (req: Request, res: Response) => {
       risk_level,
       details: details || {},
     };
-    auditAnchor.record('agent_activity', { agent_id, action, risk_level, runtime: runtimeName });
+    auditAnchor.record('agent_activity', {
+      agent_id,
+      action,
+      risk_level,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
 
     // Get current policy
     const policy = policyStore.getPolicy();
@@ -325,7 +342,7 @@ app.post('/api/events/agent-activity', async (req: Request, res: Response) => {
 });
 
 // Simulate security violation (for testing)
-app.post('/api/events/security-violation', (req: Request, res: Response) => {
+app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
   try {
     const {
       agent_id,
@@ -353,7 +370,13 @@ app.post('/api/events/security-violation', (req: Request, res: Response) => {
       requires_hitl: requires_hitl || false,
       context: context || {},
     };
-    auditAnchor.record('security_violation', { agent_id, violation_type, severity, runtime: runtimeName });
+    auditAnchor.record('security_violation', {
+      agent_id,
+      violation_type,
+      severity,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
 
     bridge.broadcastEvent(event);
     logger.broadcastEvent(event);
@@ -408,7 +431,7 @@ app.post('/api/events/security-violation', (req: Request, res: Response) => {
 });
 
 // Get server stats
-app.get('/api/stats', async (req: Request, res: Response) => {
+app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
     res.json({
@@ -435,7 +458,7 @@ app.get('/api/stats', async (req: Request, res: Response) => {
 // Phase 3: Anomaly engine endpoints
 
 // Get anomaly engine diagnostics
-app.get('/api/anomaly/diagnostics', (req: Request, res: Response) => {
+app.get('/api/anomaly/diagnostics', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
   try {
     res.json({
       success: true,
@@ -454,7 +477,7 @@ app.get('/api/anomaly/diagnostics', (req: Request, res: Response) => {
 });
 
 // Get agent anomaly profile
-app.get('/api/anomaly/profile/:agent_id', (req: Request, res: Response) => {
+app.get('/api/anomaly/profile/:agent_id', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
   try {
     const { agent_id } = req.params;
     const profile = anomalyEngine.getAgentProfile(agent_id);
@@ -475,10 +498,15 @@ app.get('/api/anomaly/profile/:agent_id', (req: Request, res: Response) => {
 });
 
 // Reset agent profile
-app.post('/api/anomaly/profile/:agent_id/reset', (req: Request, res: Response) => {
+app.post('/api/anomaly/profile/:agent_id/reset', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
   try {
     const { agent_id } = req.params;
     anomalyEngine.resetAgentProfile(agent_id);
+    auditAnchor.record('agent_profile_reset', {
+      agent_id,
+      actor_id: req.asguardIdentity?.id,
+      runtime: runtimeName,
+    });
     
     // Broadcast event
     const event: Event = {
@@ -509,7 +537,7 @@ app.post('/api/anomaly/profile/:agent_id/reset', (req: Request, res: Response) =
 });
 
 // Export audit trail
-app.get('/api/anomaly/audit-trail', (req: Request, res: Response) => {
+app.get('/api/anomaly/audit-trail', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
   try {
     const auditTrail = anomalyEngine.exportAuditTrail();
     res.json({

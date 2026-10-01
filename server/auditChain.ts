@@ -3,6 +3,7 @@ import { logger } from './logger';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getAuditSigningKey } from './auditConfig';
 
 /**
  * AuditChain maintains cryptographically signed, chain-linked audit logs
@@ -15,30 +16,34 @@ export class AuditChain {
   private sequenceNumber: number = 0;
 
   constructor(chainFilePath?: string) {
+    this.signingKey = getAuditSigningKey();
     this.chainFile = chainFilePath || path.join(
       process.env.HOME || '/tmp',
       '.astrid/audit_chain.json'
     );
-    this.signingKey = process.env.ASGUARD_AUDIT_KEY || 'default_audit_key_change_in_production';
     this.loadChain();
+    if (!this.verifyChainIntegrity()) {
+      throw new Error('Audit chain integrity check failed during startup.');
+    }
   }
 
   /**
    * Load chain from persistent storage
    */
   private loadChain(): void {
-    try {
-      if (fs.existsSync(this.chainFile)) {
-        const data = fs.readFileSync(this.chainFile, 'utf-8');
-        const parsed = JSON.parse(data);
-        this.chain = parsed.entries || [];
-        this.sequenceNumber = parsed.sequence || 0;
-        logger.info(`[AuditChain] Loaded ${this.chain.length} entries from chain`);
-      }
-    } catch (error) {
-      logger.warn(`[AuditChain] Failed to load chain:`, { error: String(error) } as Record<string, unknown>);
-      this.chain = [];
+    if (!fs.existsSync(this.chainFile)) {
+      return;
     }
+
+    const data = fs.readFileSync(this.chainFile, 'utf-8');
+    const parsed = JSON.parse(data) as { entries?: unknown; sequence?: unknown };
+    if (!Array.isArray(parsed.entries) || !Number.isInteger(parsed.sequence)) {
+      throw new Error('Audit chain file has an invalid format.');
+    }
+
+    this.chain = parsed.entries as AuditChainEntry[];
+    this.sequenceNumber = parsed.sequence as number;
+    logger.info(`[AuditChain] Loaded ${this.chain.length} entries from chain`);
   }
 
   /**
@@ -89,7 +94,13 @@ export class AuditChain {
       .digest('hex');
 
     this.chain.push(entry);
-    this.persistChain();
+    try {
+      this.persistChain();
+    } catch (error) {
+      this.chain.pop();
+      this.sequenceNumber -= 1;
+      throw error;
+    }
 
     logger.debug(`[AuditChain] Added entry ${entry.sequence_number}: ${action}`, {
       agent: agentId,
@@ -105,7 +116,12 @@ export class AuditChain {
   verifyChainIntegrity(): boolean {
     let previousHash = 'genesis';
 
-    for (const entry of this.chain) {
+    for (const [index, entry] of this.chain.entries()) {
+      if (entry.sequence_number !== index) {
+        logger.error(`[AuditChain] Unexpected sequence number at index ${index}`);
+        return false;
+      }
+
       // Check previous hash link
       if (entry.previous_hash !== previousHash) {
         logger.error(`[AuditChain] Chain broken at sequence ${entry.sequence_number}`);
@@ -146,7 +162,7 @@ export class AuditChain {
       previousHash = entry.entry_hash;
     }
 
-    return true;
+    return this.sequenceNumber === this.chain.length;
   }
 
   /**
@@ -201,14 +217,15 @@ export class AuditChain {
    * Persist chain to disk
    */
   private persistChain(): void {
-    try {
-      const chainDir = path.dirname(this.chainFile);
-      if (!fs.existsSync(chainDir)) {
-        fs.mkdirSync(chainDir, { recursive: true });
-      }
+    const chainDir = path.dirname(this.chainFile);
+    if (!fs.existsSync(chainDir)) {
+      fs.mkdirSync(chainDir, { recursive: true });
+    }
 
+    const temporaryPath = `${this.chainFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
       fs.writeFileSync(
-        this.chainFile,
+        temporaryPath,
         JSON.stringify({
           entries: this.chain,
           sequence: this.sequenceNumber,
@@ -216,8 +233,13 @@ export class AuditChain {
         }, null, 2),
         'utf-8'
       );
+      fs.renameSync(temporaryPath, this.chainFile);
     } catch (error) {
-      logger.error(`[AuditChain] Failed to persist chain:`, { error: String(error) } as Record<string, unknown>);
+      if (fs.existsSync(temporaryPath)) {
+        fs.unlinkSync(temporaryPath);
+      }
+      logger.error('[AuditChain] Failed to persist chain:', { error: String(error) });
+      throw error;
     }
   }
 
@@ -230,5 +252,3 @@ export class AuditChain {
     logger.warn('[AuditChain] Chain cleared');
   }
 }
-
-export default new AuditChain();
