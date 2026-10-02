@@ -1,249 +1,655 @@
 /**
- * Asguard Policy Configuration Types
- * Defines the structure for security policies stored in ~/.astrid/asguard_policy.json
+ * Asguard Backend Server
+ * Main entry point - initializes HTTP/WebSocket server and REST API
  */
 
-export interface AsguardPolicy {
-  max_auto_trade_usd: number;
-  strict_anomaly_detection: boolean;
-  device_ip_lock: boolean;
-  remote_trigger_protection: boolean;
-  active_llm_engine: 'ollama' | 'claude' | 'groq';
-  updated_at?: string;
-  version?: string;
-}
+import express, { Request, Response, NextFunction } from 'express';
+import http from 'http';
+import { WebSocketBridge } from './bridge';
+import { policyStore } from './policyStore';
+import { logger } from './logger';
+import { hitlHandler } from './hitlHandler';
+import AnomalyEngine from './anomalyEngine';
+import { ApiAuthenticator, parseApiCredentials } from './auth';
+import {
+  PolicyUpdateRequest,
+  PolicyResponse,
+  HealthCheckResponse,
+  Event,
+  HITLRequestEvent,
+  AgentActivityEvent,
+} from './types';
+import { CapabilityManager, defaultCapabilities } from './aos/capabilityManager';
+import { runtimeBridge } from './aos/runtimeBridge';
+import { auditAnchor } from './aos/auditAnchor';
+import { capsuleConfig } from './aos/capsuleConfig';
+import { providerRegistry } from './aos/providerRegistry';
+import { runtimeConfig } from './aos/runtimeConfig';
+import { UnicityAdapter } from './aos/unicityAdapter';
+import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
+import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
 
-export type EventType =
-  | 'agent_activity'
-  | 'capability_check'
-  | 'anomaly_detected'
-  | 'security_violation'
-  | 'hitl_request'
-  | 'audit_log'
-  | 'policy_update'
-  | 'connection_status';
+// Configuration
+const PORT = process.env.ASGUARD_PORT || 8080;
+const HOST = process.env.ASGUARD_HOST || 'localhost';
+const runtimeName = process.env.ASGUARD_RUNTIME || 'astrid';
+process.env.ASGUARD_RUNTIME = runtimeName;
+const apiAuthenticator = new ApiAuthenticator(parseApiCredentials());
 
-export interface BaseEvent {
-  type: EventType;
-  timestamp: string;
-  id: string;
-}
+const capabilityManager = new CapabilityManager(defaultCapabilities);
+capabilityManager.grant('audit_anchoring');
+runtimeBridge.connect();
+const unicityAdapter = new UnicityAdapter();
 
-export interface AgentActivityEvent extends BaseEvent {
-  type: 'agent_activity';
-  agent_id: string;
-  agent_name: string;
-  action: string;
-  risk_level: 'low' | 'medium' | 'high';
-  details: Record<string, unknown>;
-}
+// Initialize Express app
+const app = express();
+const httpServer = http.createServer(app);
 
-export interface CapabilityCheckEvent extends BaseEvent {
-  type: 'capability_check';
-  agent_id: string;
-  capability: string;
-  status: 'allowed' | 'denied';
-  reason?: string;
-}
+// Middleware
+// CORS middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Asguard-Key');
 
-export interface AnomalyDetectionEvent extends BaseEvent {
-  type: 'anomaly_detected';
-  agent_id: string;
-  anomaly_type: string;
-  confidence_score: number;
-  details: Record<string, unknown>;
-}
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
 
-export interface SecurityViolationEvent extends BaseEvent {
-  type: 'security_violation';
-  agent_id: string;
-  violation_type: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  requires_hitl: boolean;
-  context: Record<string, unknown>;
-}
+app.use('/api', apiAuthenticator.authenticationMiddleware());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-export interface HITLRequestEvent extends BaseEvent {
-  type: 'hitl_request';
-  request_id: string;
-  agent_id: string;
-  incident_type: string;
-  context: Record<string, unknown>;
-  action_options: string[];
-  expires_at: string;
-}
+// Initialize WebSocket bridge
+const bridge = new WebSocketBridge(httpServer, PORT as number);
+logger.setBridge(bridge);
 
-export interface AuditLogEvent extends BaseEvent {
-  type: 'audit_log';
-  agent_id?: string;
-  action: string;
-  resource: string;
-  status: 'success' | 'failure';
-  details?: Record<string, unknown> | unknown;
-}
+// Initialize anomaly engine (Phase 3)
+const anomalyEngine = new AnomalyEngine();
 
-export interface PolicyUpdateEvent extends BaseEvent {
-  type: 'policy_update';
-  field: string;
-  old_value: unknown;
-  new_value: unknown;
-}
+// AgentSphere wallet authentication. Challenge responses are single-use and fail closed.
+app.post('/api/auth/challenge', (req: Request, res: Response) => {
+  try {
+    const { wallet_address, origin } = req.body as { wallet_address?: string; origin?: string };
+    res.json(createWalletChallenge(wallet_address ?? '', origin ?? ''));
+  } catch (error) {
+    res.status(400).json({ success: false, error: String(error) });
+  }
+});
 
-export interface ConnectionStatusEvent extends BaseEvent {
-  type: 'connection_status';
-  status: 'connected' | 'disconnected';
-  daemon: string;
-}
+app.post('/api/auth/verify', async (req: Request, res: Response) => {
+  try {
+    const operator = await verifyWalletChallenge(req.body);
+    res.json({ success: true, operator });
+  } catch (error) {
+    res.status(401).json({ success: false, error: String(error) });
+  }
+});
 
-export type Event =
-  | AgentActivityEvent
-  | CapabilityCheckEvent
-  | AnomalyDetectionEvent
-  | SecurityViolationEvent
-  | HITLRequestEvent
-  | AuditLogEvent
-  | PolicyUpdateEvent
-  | ConnectionStatusEvent;
+// Transaction intent lifecycle. Idempotency prevents duplicate execution requests.
+app.get('/api/transactions', (_req: Request, res: Response) => res.json({ success: true, intents: listTransactionIntents() }));
 
-export interface WebSocketMessage {
-  type: 'subscribe' | 'unsubscribe' | 'event' | 'policy_update' | 'hitl_response';
-  payload: unknown;
-}
+app.post('/api/transactions', (req: Request, res: Response) => {
+  try {
+    const intent = createTransactionIntent(req.body);
+    res.status(201).json({ success: true, intent });
+  } catch (error) {
+    res.status(400).json({ success: false, error: String(error) });
+  }
+});
 
-export interface SubscriptionMessage {
-  type: 'subscribe';
-  payload: {
-    event_types?: EventType[];
-    agent_ids?: string[];
+app.post('/api/transactions/:id/transition', (req: Request, res: Response) => {
+  try {
+    const intent = transitionTransactionIntent(req.params.id, req.body.status);
+    res.json({ success: true, intent });
+  } catch (error) {
+    res.status(409).json({ success: false, error: String(error) });
+  }
+});
+
+app.get('/api/transactions/:id', (req: Request, res: Response) => {
+  const intent = getTransactionIntent(req.params.id);
+  if (!intent) { res.status(404).json({ success: false, error: 'transaction intent not found' }); return; }
+  res.json({ success: true, intent });
+});
+
+// Health check endpoint
+app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
+  try {
+    const blueprint = await unicityAdapter.buildBlueprint();
+    const response: HealthCheckResponse & {
+      runtimeConfig: typeof runtimeConfig;
+      capsule: typeof capsuleConfig;
+      providers: ReturnType<typeof providerRegistry.list>;
+      unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
+    } = {
+      status: 'ok',
+      daemon_connected: runtimeBridge.isConnected(),
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
+      runtimeConfig,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      unicity: blueprint,
+    };
+    res.json(response);
+  } catch (error) {
+    logger.error('[Server] Error building Unicity blueprint:', { error: String(error) });
+    res.status(500).json({
+      status: 'degraded',
+      daemon_connected: runtimeBridge.isConnected(),
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
+      error: String(error),
+    });
+  }
+});
+
+// Get current policy
+app.get('/api/policy', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  try {
+    const policy = policyStore.getPolicy();
+    const response: PolicyResponse = {
+      success: true,
+      policy,
+    };
+    res.json(response);
+  } catch (error) {
+    logger.error('[Server] Error getting policy:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get policy',
+    });
+  }
+});
+
+// Update policy field
+app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
+  try {
+    if (!capabilityManager.can('policy_management')) {
+      res.status(403).json({
+        success: false,
+        error: 'Policy management capability is not authorized for this runtime',
+      });
+      return;
+    }
+
+    const { field, value } = req.body as PolicyUpdateRequest;
+
+    if (!field || value === undefined) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing field or value',
+      });
+      return;
+    }
+
+    const updatedPolicy = policyStore.updateField(field, value);
+
+    // Broadcast policy update event
+    const event: Event = {
+      type: 'policy_update',
+      timestamp: new Date().toISOString(),
+      id: `evt_${Date.now()}`,
+      field,
+      old_value: null, // TODO: Track old value in policyStore
+      new_value: value,
+    };
+    auditAnchor.record('policy_update', {
+      field,
+      value,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
+    bridge.broadcastEvent(event);
+
+    const response: PolicyResponse = {
+      success: true,
+      policy: updatedPolicy,
+    };
+    res.json(response);
+
+    logger.info(`[Server] Policy updated via API: ${field} = ${JSON.stringify(value)}`);
+  } catch (error) {
+    logger.error('[Server] Error updating policy:', {
+      error: String(error),
+    });
+    res.status(400).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Reset policy to defaults
+app.post('/api/policy/reset', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
+  try {
+    const policy = policyStore.reset();
+    auditAnchor.record('policy_reset', {
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
+
+    // Broadcast reset event
+    const event: Event = {
+      type: 'policy_update',
+      timestamp: new Date().toISOString(),
+      id: `evt_${Date.now()}`,
+      field: 'all',
+      old_value: null,
+      new_value: 'defaults',
+    };
+    bridge.broadcastEvent(event);
+
+    res.json({
+      success: true,
+      policy,
+    });
+
+    logger.info('[Server] Policy reset to defaults via API');
+  } catch (error) {
+    logger.error('[Server] Error resetting policy:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset policy',
+    });
+  }
+});
+
+// Simulate agent activity (for testing)
+app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
+  try {
+    const {
+      agent_id,
+      agent_name,
+      action,
+      risk_level,
+      details,
+      amount_usd,
+      ip_address,
+      device_id,
+      contract_address,
+    } = req.body;
+
+    if (!capabilityManager.can('event_monitoring')) {
+      res.status(403).json({
+        success: false,
+        error: 'Event monitoring capability is not authorized for this runtime',
+      });
+      return;
+    }
+
+    const event: AgentActivityEvent = {
+      type: 'agent_activity',
+      timestamp: new Date().toISOString(),
+      id: `evt_${Date.now()}`,
+      agent_id,
+      agent_name,
+      action,
+      risk_level,
+      details: details || {},
+    };
+    auditAnchor.record('agent_activity', {
+      agent_id,
+      action,
+      risk_level,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
+
+    // Get current policy
+    const policy = policyStore.getPolicy();
+
+    // Process through anomaly engine
+    const anomalyResult = await anomalyEngine.processActivity(
+      event,
+      {
+        amount_usd,
+        ip_address,
+        device_id,
+        contract_address,
+      },
+      policy
+    );
+
+    // Broadcast original event
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+
+    // Broadcast anomaly event if detected
+    if (anomalyResult.anomaly_event) {
+      bridge.broadcastEvent(anomalyResult.anomaly_event);
+      logger.broadcastEvent(anomalyResult.anomaly_event);
+    }
+
+    // Trigger HITL if necessary
+    if (anomalyResult.should_trigger_hitl) {
+      const hitlEvent: HITLRequestEvent = {
+        type: 'hitl_request',
+        timestamp: new Date().toISOString(),
+        id: `hitl_${Date.now()}`,
+        request_id: `req_${Date.now()}`,
+        agent_id,
+        incident_type: 'anomaly_detected',
+        context: {
+          anomaly_score: anomalyResult.evaluation.anomaly_score,
+          rules: anomalyResult.evaluation.rules_triggered,
+          activity: event,
+        },
+        action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+        expires_at: new Date(Date.now() + 5 * 60000).toISOString(),
+      };
+
+      bridge.broadcastEvent(hitlEvent);
+      logger.broadcastEvent(hitlEvent);
+
+      // Handle HITL in background
+      hitlHandler
+        .handleRequest(hitlEvent)
+        .then((response) => {
+          logger.info('[Server] HITL response received:', response as unknown as Record<string, unknown>);
+          bridge.broadcastEvent({
+            type: 'audit_log',
+            timestamp: new Date().toISOString(),
+            id: `evt_${Date.now()}`,
+            agent_id,
+            action: 'HITL Decision Applied',
+            resource: hitlEvent.request_id,
+            status: 'success',
+            details: response as unknown as Record<string, unknown>,
+          });
+        });
+    }
+
+    res.json({
+      success: true,
+      event,
+      anomaly: anomalyResult.evaluation,
+      hitl_triggered: anomalyResult.should_trigger_hitl,
+    });
+  } catch (error) {
+    logger.error('[Server] Error creating agent activity event:', {
+      error: String(error),
+    });
+    res.status(400).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Simulate security violation (for testing)
+app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
+  try {
+    const {
+      agent_id,
+      violation_type,
+      severity,
+      requires_hitl,
+      context,
+    } = req.body;
+
+    if (!capabilityManager.can('hitl_approval')) {
+      res.status(403).json({
+        success: false,
+        error: 'HITL approval capability is not authorized for this runtime',
+      });
+      return;
+    }
+
+    const event: Event = {
+      type: 'security_violation',
+      timestamp: new Date().toISOString(),
+      id: `evt_${Date.now()}`,
+      agent_id,
+      violation_type,
+      severity,
+      requires_hitl: requires_hitl || false,
+      context: context || {},
+    };
+    auditAnchor.record('security_violation', {
+      agent_id,
+      violation_type,
+      severity,
+      runtime: runtimeName,
+      actor_id: req.asguardIdentity?.id,
+    });
+
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+
+    // If HITL is required, spawn a request
+    if (requires_hitl) {
+      const hitlEvent: HITLRequestEvent = {
+        type: 'hitl_request',
+        timestamp: new Date().toISOString(),
+        id: `evt_${Date.now()}`,
+        request_id: `req_${Date.now()}`,
+        agent_id,
+        incident_type: violation_type,
+        context,
+        action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      };
+
+      bridge.broadcastEvent(hitlEvent);
+
+      // Handle HITL in background
+      hitlHandler
+        .handleRequest(hitlEvent)
+        .then((response) => {
+          logger.info('[Server] HITL response received:', response as unknown as Record<string, unknown>);
+          bridge.broadcastEvent({
+            type: 'audit_log',
+            timestamp: new Date().toISOString(),
+            id: `evt_${Date.now()}`,
+            agent_id,
+            action: 'HITL Decision Applied',
+            resource: hitlEvent.request_id,
+            status: 'success',
+            details: response as unknown as Record<string, unknown>,
+          });
+        })
+        .catch((error) => {
+          logger.error('[Server] HITL handler error:', { error: String(error) });
+        });
+    }
+
+    res.json({ success: true, event });
+  } catch (error) {
+    logger.error('[Server] Error creating security violation event:', {
+      error: String(error),
+    });
+    res.status(400).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Get server stats
+app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
+  try {
+    const blueprint = await unicityAdapter.buildBlueprint();
+    res.json({
+      connected_clients: bridge.getClientCount(),
+      recent_events: bridge.getRecentEvents(10),
+      uptime_ms: process.uptime() * 1000,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      unicity: blueprint,
+    });
+  } catch (error) {
+    logger.error('[Server] Error building Unicity blueprint for stats:', { error: String(error) });
+    res.status(500).json({
+      connected_clients: bridge.getClientCount(),
+      recent_events: bridge.getRecentEvents(10),
+      uptime_ms: process.uptime() * 1000,
+      capsule: capsuleConfig,
+      providers: providerRegistry.list(),
+      error: String(error),
+    });
+  }
+});
+
+// Phase 3: Anomaly engine endpoints
+
+// Get anomaly engine diagnostics
+app.get('/api/anomaly/diagnostics', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      diagnostics: anomalyEngine.getDiagnostics(),
+      audit_chain_valid: anomalyEngine.verifyAuditChain(),
+    });
+  } catch (error) {
+    logger.error('[Server] Error getting anomaly diagnostics:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Get agent anomaly profile
+app.get('/api/anomaly/profile/:agent_id', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  try {
+    const { agent_id } = req.params;
+    const profile = anomalyEngine.getAgentProfile(agent_id);
+    res.json({
+      success: true,
+      agent_id,
+      profile,
+    });
+  } catch (error) {
+    logger.error('[Server] Error getting agent profile:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Reset agent profile
+app.post('/api/anomaly/profile/:agent_id/reset', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
+  try {
+    const { agent_id } = req.params;
+    anomalyEngine.resetAgentProfile(agent_id);
+    auditAnchor.record('agent_profile_reset', {
+      agent_id,
+      actor_id: req.asguardIdentity?.id,
+      runtime: runtimeName,
+    });
+    
+    // Broadcast event
+    const event: Event = {
+      type: 'audit_log',
+      timestamp: new Date().toISOString(),
+      id: `evt_${Date.now()}`,
+      agent_id,
+      action: 'Profile Reset',
+      resource: agent_id,
+      status: 'success',
+    };
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+
+    res.json({
+      success: true,
+      message: `Profile reset for ${agent_id}`,
+    });
+  } catch (error) {
+    logger.error('[Server] Error resetting profile:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// Export audit trail
+app.get('/api/anomaly/audit-trail', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  try {
+    const auditTrail = anomalyEngine.exportAuditTrail();
+    res.json({
+      success: true,
+      ...auditTrail,
+    });
+  } catch (error) {
+    logger.error('[Server] Error exporting audit trail:', {
+      error: String(error),
+    });
+    res.status(500).json({
+      success: false,
+      error: String(error),
+    });
+  }
+});
+
+// 404 handler
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    error: 'Not found',
+    path: req.path,
+  });
+});
+
+// Error handler
+app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
+  logger.error('[Server] Unhandled error:', { error: error.message });
+  res.status(500).json({
+    error: 'Internal server error',
+  });
+});
+
+// Graceful shutdown
+const shutdown = () => {
+  logger.info('[Server] Shutting down gracefully...');
+  hitlHandler.close();
+  bridge.close();
+  httpServer.close(() => {
+    logger.info('[Server] Server closed');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+// Start server
+httpServer.listen(Number(PORT), HOST as string, () => {
+  logger.success(
+    `[Server] Asguard bridge listening on http://${HOST}:${PORT}`
+  );
+  logger.info(`[Server] WebSocket endpoint: ws://${HOST}:${PORT}/ws`);
+  logger.info(
+    `[Server] Policy file: ${policyStore.getPolicyPath()}`
+  );
+
+  // Broadcast connection status
+  const connectionEvent: Event = {
+    type: 'connection_status',
+    timestamp: new Date().toISOString(),
+    id: `evt_${Date.now()}`,
+    status: 'connected',
+    daemon: 'asguard-bridge',
   };
-}
-
-export interface HITLResponse extends Record<string, unknown> {
-  request_id: string;
-  action: 'allow_once' | 'allow_session' | 'deny_terminate';
-  reason?: string;
-}
-
-export interface PolicyUpdateRequest {
-  field: keyof AsguardPolicy;
-  value: unknown;
-}
-
-export interface PolicyResponse {
-  success: boolean;
-  policy?: AsguardPolicy;
-  error?: string;
-}
-
-export interface HealthCheckResponse {
-  status: 'ok' | 'degraded' | 'error';
-  daemon_connected: boolean;
-  timestamp: string;
-  version: string;
-  runtime: string;
-  capabilities: string[];
-}
-
-export interface AnomalyProfile {
-  agent_id: string;
-  baseline_trade_frequency: number;
-  baseline_avg_amount_usd: number;
-  baseline_ips: Set<string>;
-  baseline_devices: Set<string>;
-  first_seen: Date;
-  last_updated: Date;
-  observation_count: number;
-}
-
-export interface EvaluationResult {
-  agent_id: string;
-  anomaly_score: number;
-  rules_triggered: RuleViolation[];
-  action: 'silent_pass' | 'warn' | 'halt_and_hitl';
-  confidence: number;
-  timestamp: string;
-}
-
-export interface RuleViolation {
-  rule_id: 'ip_breach' | 'budget_overrun' | 'frequency_spike' | 'unverified_contract';
-  severity: 'high' | 'medium';
-  score_contribution: number;
-  details: Record<string, unknown>;
-}
-
-export interface AuditChainEntry {
-  sequence_number: number;
-  timestamp: string;
-  event_id: string;
-  agent_id: string;
-  action: string;
-  anomaly_score?: number;
-  previous_hash: string;
-  entry_hash: string;
-  signature: string;
-}
-
-export interface ContractValidationResult {
-  contract_address: string;
-  is_verified: boolean;
-  verification_type: 'bytecode' | 'source' | 'abi';
-  details: Record<string, unknown>;
-  checked_at: string;
-}
-
-export type TransactionIntentStatus =
-  | 'created'
-  | 'evaluating'
-  | 'blocked'
-  | 'awaiting_approval'
-  | 'approved'
-  | 'authorized'
-  | 'submitted'
-  | 'confirmed'
-  | 'rejected'
-  | 'expired'
-  | 'failed';
-
-export interface TransactionIntent {
-  id: string;
-  idempotency_key: string;
-  correlation_id: string;
-  agent_id: string;
-  wallet_id: string;
-  network: string;
-  action: string;
-  resource: string;
-  payload_hash: string;
-  amount?: string;
-  status: TransactionIntentStatus;
-  risk_level: 'low' | 'medium' | 'high' | 'critical';
-  policy_version?: string;
-  expires_at: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface TransactionSimulation {
-  status: 'passed' | 'failed' | 'unavailable';
-  payload_hash: string;
-  network: string;
-  reason?: string;
-  checked_at: string;
-}
-
-export interface AgentSphereOperator {
-  wallet_address: string;
-  role: 'operator' | 'auditor' | 'admin';
-  session_id: string;
-  authenticated_at: string;
-  expires_at: string;
-}
-
-export interface ApprovalRequest {
-  request_id: string;
-  intent_id: string;
-  status: 'pending' | 'approved' | 'denied' | 'expired';
-  scope: 'once' | 'session';
-  operator_wallet?: string;
-  expires_at: string;
-}
+  bridge.broadcastEvent(connectionEvent);
+});

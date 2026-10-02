@@ -1,28 +1,67 @@
-import path from "path";
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  turbopack: {
-    root: path.resolve(process.cwd()),
+{
+  "name": "black-friday-map",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
   },
-  typescript: {
-    ignoreBuildErrors: true,
+  "scripts": {
+    "build": "next build",
+    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch server/index.ts\"",
+    "dev:frontend": "next dev",
+    "dev:backend": "node --env-file=.env --import tsx --watch server/index.ts",
+    "lint": "eslint",
+    "start": "next start",
+    "backend:start": "node dist/server/index.js",
+    "build:capsule": "cd capsule && cargo build --release",
+    "install:local": "./install.sh",
+    "daemon:start": "./scripts/asguard.sh start",
+    "daemon:status": "./scripts/asguard.sh status",
+    "daemon:logs": "./scripts/asguard.sh logs",
+    "daemon:policy": "./scripts/asguard.sh policy",
+    "daemon:audit": "./scripts/asguard.sh audit",
+    "daemon:uninstall": "./scripts/asguard.sh uninstall"
   },
-  images: {
-    unoptimized: true,
+  "bin": {
+    "asguard": "./scripts/asguard.sh"
   },
-  async headers() {
-    return [{
-      source: "/(.*)",
-      headers: [
-        { key: "X-Content-Type-Options", value: "nosniff" },
-        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-        { key: "Strict-Transport-Security", value: "max-age=63072000" },
-        { key: "X-Frame-Options", value: "SAMEORIGIN" },
-        { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-      ],
-    }];
+  "dependencies": {
+    "@emotion/is-prop-valid": "latest",
+    "@types/topojson-client": "^3.1.5",
+    "@unicitylabs/sphere-sdk": "^0.11.15",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "d3-geo": "^3.1.1",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.18.2",
+    "framer-motion": "^12.23.25",
+    "jiti": "latest",
+    "lucide-react": "0.555.0",
+    "next": "16.0.6",
+    "pg": "^8.23.0",
+    "prop-types": "latest",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "tailwind-merge": "3.4.0",
+    "tailwindcss-animate": "1.0.7",
+    "topojson-client": "^3.1.0",
+    "ws": "^8.14.2"
   },
-};
-
-export default nextConfig;
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/d3-geo": "^3.1.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.5.8",
+    "concurrently": "^8.2.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.0.6",
+    "postcss": "8.5.6",
+    "tailwindcss": "^4",
+    "tsx": "^4.7.0",
+    "typescript": "^5"
+  }
+}
