@@ -1,46 +1,17 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Unicity / AgentSphere runtime configuration
+UNICITY_NETWORK=testnet2
+UNICITY_WALLET_API_URL=https://wallet-api.unicity.network
+UNICITY_DEVICE_ID=asguard-runtime
+# No Oracle API key is required; AgentSphere authenticates with wallet signatures.
+UNICITY_DATA_DIR=./.sphere-data
+UNICITY_TOKENS_DIR=./.sphere-tokens
 
-# dependencies
-/node_modules
+# ASGUARD control-plane defaults
+ASGUARD_HOST=127.0.0.1
+ASGUARD_PORT=8080
+ASGUARD_DEMO_MODE=false
+ASGUARD_ALLOWED_ORIGINS=http://localhost:3000
+ASGUARD_AUDIT_KEY=
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# environment files; keep the safe template versioned
-.env
-.env.*
-!.env.example
-.envrc
-.direnv/
-
-# local secrets and private keys
-/secrets/
-*.pem
-*.key
-*.p12
-*.pfx
-
-# generated local audit and policy data
-/asguard_audit_*.json
-/audit_chain.json
-/asguard_policy.json
-
-# local logs
-*.log
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# Neon persistence (required for durable pilot records)
+DATABASE_URL=
