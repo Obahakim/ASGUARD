@@ -12,6 +12,7 @@ interface BridgeOptions {
   url?: string;
   eventTypes?: EventType[];
   autoConnect?: boolean;
+  getWebSocketTicket?: () => Promise<string>;
 }
 
 interface UseBridgeConnection {
@@ -33,6 +34,7 @@ export function useBridgeConnection(
       : 'ws://localhost:8080/ws',
     eventTypes = [],
     autoConnect = true,
+    getWebSocketTicket,
   } = options;
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -47,13 +49,17 @@ export function useBridgeConnection(
   /**
    * Connect to WebSocket bridge
    */
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return; // Already connected
     }
 
     try {
-      const ws = new WebSocket(url);
+      if (!getWebSocketTicket) {
+        throw new Error('A one-time WebSocket ticket provider is required.');
+      }
+      const ticket = await getWebSocketTicket();
+      const ws = new WebSocket(url, ['asguard.v1', `asguard-ticket.${ticket}`]);
 
       ws.addEventListener('open', () => {
         console.log('[useBridgeConnection] Connected to bridge');
@@ -113,7 +119,7 @@ export function useBridgeConnection(
           );
 
           reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
+            void connect();
           }, delay);
         } else {
           console.error(
@@ -130,7 +136,7 @@ export function useBridgeConnection(
     } catch (error) {
       console.error('[useBridgeConnection] Connection error:', error);
     }
-  }, [url, eventTypes, onEvent]);
+  }, [url, eventTypes, onEvent, getWebSocketTicket]);
 
   /**
    * Disconnect from WebSocket bridge
@@ -202,7 +208,7 @@ export function useBridgeConnection(
    */
   useEffect(() => {
     if (autoConnect) {
-      connect();
+      void connect();
     }
 
     return () => {

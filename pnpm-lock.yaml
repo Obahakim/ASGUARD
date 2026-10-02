@@ -15,8 +15,8 @@ importers:
         specifier: ^3.1.5
         version: 3.1.5
       '@unicitylabs/sphere-sdk':
-        specifier: ^0.11.15
-        version: 0.11.15(ws@8.21.1)
+        specifier: 0.17.7
+        version: 0.17.7(ws@8.21.1)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -954,8 +954,8 @@ packages:
     resolution: {integrity: sha512-l6WcCmFok9nxI1WkYsjIVu67svouA2QyB5Vb+GTNugWrbw7hUgJMA1Elj8qu3u0qojvSINL/L9eWTmXVWRzZUw==}
     engines: {node: '>=18.0.0'}
 
-  '@unicitylabs/sphere-sdk@0.11.15':
-    resolution: {integrity: sha512-dCcY6jKOQpxZDNSJBq2qyfITBcInuc8Zz+IlXT6UOIDQAWEf34dh/IlAApIpjfIRFhfzNnEUh+cTR0d23HILHg==}
+  '@unicitylabs/sphere-sdk@0.17.7':
+    resolution: {integrity: sha512-Iq5p267IokQwXgs/KwKxtz9g3pJJWvDfcuHVJiQp6/OiB3Pl3/cyaPAq5TXoJH/zMOwROTB0i9mfVsxgOIffiA==}
     engines: {node: '>=22.0.0'}
     peerDependencies:
       ws: '>=8.0.0'
@@ -963,8 +963,8 @@ packages:
       ws:
         optional: true
 
-  '@unicitylabs/state-transition-sdk@2.0.0-rc.68bc1e5':
-    resolution: {integrity: sha512-JJ1jQFTexMBRwpn3pmhm4s2FulBcOBGyNZmQ4qd5ZheenbVLUkY5KSJ++J3Gnh/Vmhd6WVuCBw+FCyqXN39aHQ==}
+  '@unicitylabs/state-transition-sdk@3.0.1':
+    resolution: {integrity: sha512-ND4mW7nQjgr8yDdxvHNFheHH3gPijD4y0NS7XU2YPzjsdyDs4LDCYlRG/ZSSEDbz3xVgMh1biL3BY60nGPIsXQ==}
     engines: {node: '>=22'}
 
   '@unrs/resolver-binding-android-arm-eabi@1.12.2':
@@ -3646,13 +3646,13 @@ snapshots:
       '@scure/base': 1.2.6
       libphonenumber-js: 1.13.9
 
-  '@unicitylabs/sphere-sdk@0.11.15(ws@8.21.1)':
+  '@unicitylabs/sphere-sdk@0.17.7(ws@8.21.1)':
     dependencies:
       '@noble/ciphers': 2.2.0
       '@noble/curves': 2.2.0
       '@noble/hashes': 2.2.0
       '@unicitylabs/nostr-js-sdk': 0.6.0
-      '@unicitylabs/state-transition-sdk': 2.0.0-rc.68bc1e5
+      '@unicitylabs/state-transition-sdk': 3.0.1
       bip39: 3.1.0
       buffer: 6.0.3
       canonicalize: 3.0.0
@@ -3664,7 +3664,7 @@ snapshots:
       multiformats: 13.4.2
       ws: 8.21.1
 
-  '@unicitylabs/state-transition-sdk@2.0.0-rc.68bc1e5':
+  '@unicitylabs/state-transition-sdk@3.0.1':
     dependencies:
       '@noble/curves': 2.2.0
       '@noble/hashes': 2.2.0

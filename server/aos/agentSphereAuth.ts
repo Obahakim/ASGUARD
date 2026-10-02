@@ -1,67 +1,69 @@
-{
-  "name": "black-friday-map",
-  "version": "0.1.0",
-  "private": true,
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "scripts": {
-    "build": "next build",
-    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch server/index.ts\"",
-    "dev:frontend": "next dev",
-    "dev:backend": "node --env-file=.env --import tsx --watch server/index.ts",
-    "lint": "eslint",
-    "start": "next start",
-    "backend:start": "node dist/server/index.js",
-    "build:capsule": "cd capsule && cargo build --release",
-    "install:local": "./install.sh",
-    "daemon:start": "./scripts/asguard.sh start",
-    "daemon:status": "./scripts/asguard.sh status",
-    "daemon:logs": "./scripts/asguard.sh logs",
-    "daemon:policy": "./scripts/asguard.sh policy",
-    "daemon:audit": "./scripts/asguard.sh audit",
-    "daemon:uninstall": "./scripts/asguard.sh uninstall"
-  },
-  "bin": {
-    "asguard": "./scripts/asguard.sh"
-  },
-  "dependencies": {
-    "@emotion/is-prop-valid": "latest",
-    "@types/topojson-client": "^3.1.5",
-    "@unicitylabs/sphere-sdk": "^0.11.15",
-    "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
-    "d3-geo": "^3.1.1",
-    "drizzle-orm": "^0.45.2",
-    "express": "^4.18.2",
-    "framer-motion": "^12.23.25",
-    "jiti": "latest",
-    "lucide-react": "0.555.0",
-    "next": "16.0.6",
-    "pg": "^8.23.0",
-    "prop-types": "latest",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "tailwind-merge": "3.4.0",
-    "tailwindcss-animate": "1.0.7",
-    "topojson-client": "^3.1.0",
-    "ws": "^8.14.2"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/d3-geo": "^3.1.0",
-    "@types/express": "^4.17.21",
-    "@types/node": "^20",
-    "@types/pg": "^8.23.1",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@types/ws": "^8.5.8",
-    "concurrently": "^8.2.2",
-    "eslint": "^9",
-    "eslint-config-next": "16.0.6",
-    "postcss": "8.5.6",
-    "tailwindcss": "^4",
-    "tsx": "^4.7.0",
-    "typescript": "^5"
+import crypto from 'node:crypto';
+import { verifySignedMessage } from '@unicitylabs/sphere-sdk';
+import type { AgentSphereOperator } from '../types';
+
+type Challenge = {
+  wallet_address: string;
+  nonce: string;
+  message: string;
+  expires_at: number;
+};
+
+const challenges = new Map<string, Challenge>();
+const sessions = new Map<string, AgentSphereOperator>();
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 60 * 1000;
+
+export function createWalletChallenge(walletAddress: string, origin: string) {
+  const normalized = walletAddress.trim();
+  if (!normalized || !origin.trim()) throw new Error('wallet address and origin are required');
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + CHALLENGE_TTL_MS;
+  const message = `ASGUARD AgentSphere login\nOrigin: ${origin}\nWallet: ${normalized}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`;
+  challenges.set(nonce, { wallet_address: normalized, nonce, message, expires_at: expiresAt });
+  return { nonce, message, expires_at: new Date(expiresAt).toISOString() };
+}
+
+export async function verifyWalletChallenge(input: {
+  wallet_address: string;
+  nonce: string;
+  signature: string;
+  origin: string;
+}): Promise<AgentSphereOperator> {
+  const challenge = challenges.get(input.nonce);
+  if (!challenge || challenge.expires_at < Date.now()) throw new Error('challenge expired or unknown');
+  challenges.delete(input.nonce);
+  if (challenge.wallet_address !== input.wallet_address.trim()) throw new Error('wallet does not match challenge');
+  if (!input.signature.trim()) throw new Error('signature is required');
+  if (input.origin.trim() === '') throw new Error('origin is required');
+  if (!challenge.message.includes(`Origin: ${input.origin.trim()}`)) throw new Error('origin does not match challenge');
+
+  const valid = verifySignedMessage(challenge.message, input.signature.trim(), input.wallet_address.trim());
+  if (!valid) throw new Error('invalid AgentSphere wallet signature');
+
+  const sessionId = crypto.randomBytes(32).toString('base64url');
+  const authenticatedAt = new Date();
+  const operator: AgentSphereOperator = {
+    wallet_address: input.wallet_address.trim(),
+    role: 'operator',
+    session_id: sessionId,
+    authenticated_at: authenticatedAt.toISOString(),
+    expires_at: new Date(authenticatedAt.getTime() + SESSION_TTL_MS).toISOString(),
+  };
+  sessions.set(sessionId, operator);
+  return operator;
+}
+
+export function getOperatorFromSession(sessionId: string | undefined): AgentSphereOperator | undefined {
+  if (!sessionId) return undefined;
+  const operator = sessions.get(sessionId);
+  if (!operator || new Date(operator.expires_at).getTime() < Date.now()) {
+    sessions.delete(sessionId);
+    return undefined;
   }
+  return operator;
+}
+
+export function revokeOperatorSession(sessionId: string): void {
+  sessions.delete(sessionId);
 }

@@ -1,69 +1,41 @@
-import crypto from 'node:crypto';
-import { verifySignedMessage } from '@unicitylabs/sphere-sdk';
-import type { AgentSphereOperator } from '../types';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { sql } from 'drizzle-orm';
+import { Pool } from 'pg';
+import type { TransactionIntent } from './types';
 
-type Challenge = {
-  wallet_address: string;
-  nonce: string;
-  message: string;
-  expires_at: number;
-};
+const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : null;
+const db = pool ? drizzle(pool) : null;
 
-const challenges = new Map<string, Challenge>();
-const sessions = new Map<string, AgentSphereOperator>();
-const CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const SESSION_TTL_MS = 30 * 60 * 1000;
-
-export function createWalletChallenge(walletAddress: string, origin: string) {
-  const normalized = walletAddress.trim();
-  if (!normalized || !origin.trim()) throw new Error('wallet address and origin are required');
-  const nonce = crypto.randomBytes(32).toString('base64url');
-  const expiresAt = Date.now() + CHALLENGE_TTL_MS;
-  const message = `ASGUARD AgentSphere login\nOrigin: ${origin}\nWallet: ${normalized}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`;
-  challenges.set(nonce, { wallet_address: normalized, nonce, message, expires_at: expiresAt });
-  return { nonce, message, expires_at: new Date(expiresAt).toISOString() };
+export function neonPersistenceEnabled(): boolean {
+  return Boolean(db);
 }
 
-export async function verifyWalletChallenge(input: {
-  wallet_address: string;
-  nonce: string;
-  signature: string;
-  origin: string;
-}): Promise<AgentSphereOperator> {
-  const challenge = challenges.get(input.nonce);
-  if (!challenge || challenge.expires_at < Date.now()) throw new Error('challenge expired or unknown');
-  challenges.delete(input.nonce);
-  if (challenge.wallet_address !== input.wallet_address.trim()) throw new Error('wallet does not match challenge');
-  if (!input.signature.trim()) throw new Error('signature is required');
-  if (input.origin.trim() === '') throw new Error('origin is required');
-  if (!challenge.message.includes(`Origin: ${input.origin.trim()}`)) throw new Error('origin does not match challenge');
-
-  const valid = verifySignedMessage(challenge.message, input.signature.trim(), input.wallet_address.trim());
-  if (!valid) throw new Error('invalid AgentSphere wallet signature');
-
-  const sessionId = crypto.randomBytes(32).toString('base64url');
-  const authenticatedAt = new Date();
-  const operator: AgentSphereOperator = {
-    wallet_address: input.wallet_address.trim(),
-    role: 'operator',
-    session_id: sessionId,
-    authenticated_at: authenticatedAt.toISOString(),
-    expires_at: new Date(authenticatedAt.getTime() + SESSION_TTL_MS).toISOString(),
-  };
-  sessions.set(sessionId, operator);
-  return operator;
+export async function persistIntent(intent: TransactionIntent): Promise<void> {
+  if (!db) return;
+  await db.execute(sql`INSERT INTO asguard_transaction_intents
+    (id, subject, chain_id, network, wallet_address, target_address, value, calldata, function_selector, status, risk_score, policy_version, simulation, created_at, updated_at)
+    VALUES (${intent.id}, ${intent.wallet_id}, ${intent.network}, ${intent.network}, ${intent.wallet_id}, ${intent.resource}, ${intent.amount ?? '0'}, ${intent.payload_hash}, ${null}, ${intent.status}, ${intent.risk_level === 'critical' ? 100 : intent.risk_level === 'high' ? 75 : intent.risk_level === 'medium' ? 40 : 10}, ${intent.policy_version ?? 'unknown'}, ${null}, ${intent.created_at}, ${intent.updated_at})
+    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`);
 }
 
-export function getOperatorFromSession(sessionId: string | undefined): AgentSphereOperator | undefined {
-  if (!sessionId) return undefined;
-  const operator = sessions.get(sessionId);
-  if (!operator || new Date(operator.expires_at).getTime() < Date.now()) {
-    sessions.delete(sessionId);
-    return undefined;
-  }
-  return operator;
-}
-
-export function revokeOperatorSession(sessionId: string) {
-  sessions.delete(sessionId);
+export async function loadIntents(): Promise<TransactionIntent[]> {
+  if (!db) return [];
+  const result = await db.execute(sql`SELECT id, subject, network, status, policy_version, created_at, updated_at FROM asguard_transaction_intents ORDER BY created_at DESC`);
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    idempotency_key: String(row.id),
+    correlation_id: String(row.id),
+    agent_id: 'persisted',
+    wallet_id: String(row.subject),
+    network: String(row.network),
+    action: 'transaction',
+    resource: String(row.subject),
+    payload_hash: '',
+    status: row.status as TransactionIntent['status'],
+    risk_level: 'medium',
+    policy_version: row.policy_version ? String(row.policy_version) : undefined,
+    expires_at: String(row.updated_at),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+  }));
 }

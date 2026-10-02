@@ -14,9 +14,15 @@ import {
 } from './types';
 import { logger } from './logger';
 import { hitlHandler } from './hitlHandler';
+import type { ApiIdentity } from './auth';
+
+type TicketConsumer = (ticket: string) => ApiIdentity | undefined;
+const REQUIRED_PROTOCOL = 'asguard.v1';
+const TICKET_PROTOCOL_PREFIX = 'asguard-ticket.';
 
 interface ConnectedClient {
   ws: WebSocket;
+  identity: ApiIdentity;
   subscriptions: Set<EventType>;
   connectedAt: Date;
 }
@@ -27,12 +33,49 @@ export class WebSocketBridge {
   private clientCounter = 0;
   private eventQueue: Event[] = [];
   private maxQueueSize = 5000;
+  private clientIdentities = new WeakMap<WebSocket, ApiIdentity>();
 
-  constructor(httpServer: HTTPServer, port: number) {
+  constructor(
+    httpServer: HTTPServer,
+    port: number,
+    consumeTicket: TicketConsumer,
+    allowedOrigins: ReadonlySet<string>
+  ) {
     this.wss = new WebSocketServer({
-      server: httpServer,
-      path: '/ws',
+      noServer: true,
       perMessageDeflate: false,
+      handleProtocols: (protocols) => protocols.has(REQUIRED_PROTOCOL) ? REQUIRED_PROTOCOL : false,
+    });
+
+    httpServer.on('upgrade', (req, socket, head) => {
+      const requestUrl = new URL(req.url || '/', 'http://localhost');
+      if (requestUrl.pathname !== '/ws') {
+        socket.destroy();
+        return;
+      }
+
+      const origin = req.headers.origin;
+      const protocolHeader = req.headers['sec-websocket-protocol'];
+      const protocols = typeof protocolHeader === 'string'
+        ? protocolHeader.split(',').map((protocol) => protocol.trim())
+        : [];
+      const ticketProtocol = protocols.find((protocol) => protocol.startsWith(TICKET_PROTOCOL_PREFIX));
+      const ticket = ticketProtocol?.slice(TICKET_PROTOCOL_PREFIX.length) || '';
+      const originAllowed = !origin || allowedOrigins.has(origin);
+      const identity = originAllowed && protocols.includes(REQUIRED_PROTOCOL) && ticket
+        ? consumeTicket(ticket)
+        : undefined;
+
+      if (!identity) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.clientIdentities.set(ws, identity);
+        this.wss.emit('connection', ws, req);
+      });
     });
 
     this.setupConnectionHandler();
@@ -45,14 +88,21 @@ export class WebSocketBridge {
   private setupConnectionHandler(): void {
     this.wss.on('connection', (ws: WebSocket, req) => {
       const clientId = `client_${++this.clientCounter}`;
+      const identity = this.clientIdentities.get(ws);
+      this.clientIdentities.delete(ws);
+      if (!identity) {
+        ws.close(1008, 'Authentication required');
+        return;
+      }
       const client: ConnectedClient = {
         ws,
+        identity,
         subscriptions: new Set<EventType>(),
         connectedAt: new Date(),
       };
 
       this.clients.set(clientId, client);
-      logger.info(`[Bridge] Client connected: ${clientId}`);
+      logger.info(`[Bridge] Authenticated client connected: ${clientId}`, { identity_id: identity.id });
 
       // Send connection confirmation
       this.sendToClient(ws, {
@@ -118,7 +168,11 @@ export class WebSocketBridge {
           break;
 
         case 'hitl_response':
-          this.handleHITLResponse(clientId, message.payload as HITLResponse);
+          if (client.identity.roles.some((role) => role === 'admin' || role === 'operator')) {
+            this.handleHITLResponse(clientId, message.payload as HITLResponse);
+          } else {
+            this.sendError(client.ws, 'Insufficient role for HITL decisions.');
+          }
           break;
 
         case 'policy_update':
@@ -149,7 +203,10 @@ export class WebSocketBridge {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    const eventTypes = message.payload.event_types || [];
+    const requestedTypes = message.payload.event_types || [];
+    const eventTypes = this.canReadAllEvents(client.identity)
+      ? requestedTypes
+      : requestedTypes.filter((type) => type === 'connection_status');
     eventTypes.forEach((type) => client.subscriptions.add(type));
 
     logger.debug(`[Bridge] Client ${clientId} subscribed to events:`, {
@@ -209,8 +266,8 @@ export class WebSocketBridge {
       // If client has no subscriptions, send all events
       // Otherwise, only send subscribed event types
       const shouldSend =
-        client.subscriptions.size === 0 ||
-        client.subscriptions.has(event.type);
+        (this.canReadAllEvents(client.identity) || event.type === 'connection_status') &&
+        (client.subscriptions.size === 0 || client.subscriptions.has(event.type));
 
       if (shouldSend && client.ws.readyState === WebSocket.OPEN) {
         this.sendToClient(client.ws, {
@@ -219,6 +276,10 @@ export class WebSocketBridge {
         });
       }
     });
+  }
+
+  private canReadAllEvents(identity: ApiIdentity): boolean {
+    return identity.roles.some((role) => role === 'admin' || role === 'operator' || role === 'auditor');
   }
 
   /**

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { ApiAuthenticator, parseApiCredentials } from './auth';
 import { getAuditSigningKey } from './auditConfig';
 import { AuditChain } from './auditChain';
+import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
 
 const runtimeToken = 'a-long-enough-runtime-token-value-123456';
 const adminToken = 'a-long-enough-admin-token-value-123456';
@@ -62,6 +63,20 @@ test('enforces role-based permissions for runtime and admin identities', () => {
   assert.equal(runtimeAllowed, true);
   assert.equal(runtimeDeniedStatus, 403);
   assert.equal(adminAllowed, true);
+});
+
+test('WebSocket tickets are short-lived and single-use', () => {
+  const identity = { id: 'ops-admin', roles: ['admin', 'operator'] as const };
+  const ticket = issueWebSocketTicket(identity, 1_000);
+
+  assert.deepEqual(consumeWebSocketTicket(ticket, 1_001), {
+    id: 'ops-admin',
+    roles: ['admin', 'operator'],
+  });
+  assert.equal(consumeWebSocketTicket(ticket, 1_002), undefined);
+
+  const expiredTicket = issueWebSocketTicket(identity, 2_000);
+  assert.equal(consumeWebSocketTicket(expiredTicket, 32_000), undefined);
 });
 
 test('rejects missing or weak audit signing keys', () => {

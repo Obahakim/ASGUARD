@@ -1,9 +1,11 @@
 # ASGUARD Production Readiness Roadmap
 
 ## Current status
-- In progress: trusted runtime integration
-- Implemented: named API identities and route-level roles; startup validation for API and audit signing keys; audit-chain integrity checks on load and atomic fail-closed writes
-- Still required before deployment: signed runtime events, authenticated WebSocket clients, durable database-backed state, and validation on Node.js 22+
+- Implemented: named API identities and route-level roles; startup validation for API and audit signing keys; audit-chain integrity checks on load and atomic fail-closed writes; one-time-ticket WebSocket authentication; Origin allowlisting; role-limited event subscriptions and transaction approvals
+- Network config now targets mainnet in the local `.env`, with mainnet wallet data isolated from testnet data
+- Not verified: Node.js 22 runtime, SDK package installation, or automated tests after the latest SDK pin
+- Blocked for live fungible transfers: mainnet gateway key is not configured and the SDK's mainnet registry currently has no fungible assets
+- Still required: initialize a wallet through the upgraded SDK, add an explicit preflight/simulation and approved send flow for supported assets, persist/replay full transaction state, and validate on Node.js 22+
 
 ## API credential configuration
 Set `ASGUARD_API_CREDENTIALS` to a JSON array of identities. Each identity needs a unique id, a unique randomly generated token of at least 32 bytes, and one or more roles (`admin`, `operator`, `auditor`, `runtime`). Inject this value through the deployment secret manager; do not commit credentials to the repository.

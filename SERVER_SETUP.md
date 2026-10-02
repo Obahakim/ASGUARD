@@ -318,6 +318,14 @@ ASGUARD_AUDIT_KEY='<audit-secret>'
 HOME=/home/user
 ```
 
+## Mainnet readiness
+
+`UNICITY_NETWORK=mainnet`, `UNICITY_GATEWAY_URL=https://gateway.mainnet.unicity.network`, and `UNICITY_WALLET_API_URL=https://wallet-api.mainnet.unicity.network` are the documented mainnet settings. `UNICITY_DEVICE_ID` should be a stable, unique identifier for this server. `UNICITY_DATA_DIR` should be a persistent, private directory and must not share testnet wallet files.
+
+`UNICITY_ORACLE_API_KEY` is a secret issued by the Unicity network operator; request a mainnet key from them. Do not use the public testnet key. `UNICITY_WALLET_PASSWORD` is a long, unique password you generate and store in your secret manager. Do not paste either value into chat or commit them.
+
+The SDK's current mainnet registry lists no fungible coins. The project does not yet implement an SDK-backed wallet, transaction simulation, or real send/confirmation flow, so changing these URLs alone does not make mainnet transfers available. Mainnet submission must remain disabled until a supported asset, wallet initialization, preflight, approval, and SDK send path are implemented and tested.
+
 ## Next Steps
 
 1. **Start the servers**: `pnpm dev`
