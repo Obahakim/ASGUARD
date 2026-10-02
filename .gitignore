@@ -15,3 +15,4 @@ ASGUARD_AUDIT_KEY=
 
 # Neon persistence (required for durable pilot records)
 DATABASE_URL=
+node_modules
