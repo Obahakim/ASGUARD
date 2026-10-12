@@ -116,6 +116,15 @@ export class WebSocketBridge {
         },
       });
 
+      // Restore recent activity for operator dashboards that reconnect after an event.
+      // Runtime-only clients must not receive operator activity or account details.
+      if (this.canReadAllEvents(identity)) {
+        this.eventQueue.slice(-100).forEach((event) => {
+          if (event.type === 'hitl_request' && !hitlHandler.getPendingRequest(event.request_id)) return;
+          this.sendToClient(ws, { type: 'event', payload: event });
+        });
+      }
+
       // Handle incoming messages
       ws.on('message', (data: WebSocket.Data) => {
         try {

@@ -88,6 +88,7 @@ export function useBridgeConnection(
 
             // Store event
             setEvents((prev) => {
+              if (prev.some((item) => item.id === eventData.id)) return prev;
               const updated = [...prev, eventData];
               // Keep only last 1000 events
               return updated.slice(-1000);

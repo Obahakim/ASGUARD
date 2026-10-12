@@ -10,6 +10,7 @@ import { logger } from './logger';
 interface PendingRequest {
   event: HITLRequestEvent;
   timeout: NodeJS.Timeout;
+  interactive: boolean;
   resolve: (response: HITLResponse) => void;
   reject: (error: Error) => void;
 }
@@ -34,7 +35,7 @@ export class HITLHandler {
     });
 
     this.rl.on('close', () => {
-      this.rejectAllPending('User closed terminal');
+      this.rejectInteractivePending('User closed terminal');
     });
   }
 
@@ -70,6 +71,7 @@ export class HITLHandler {
       this.pendingRequests.set(requestId, {
         event,
         timeout,
+        interactive,
         resolve,
         reject,
       });
@@ -223,6 +225,16 @@ export class HITLHandler {
       logger.warn(`[HITL] Request rejected (${reason}): ${requestId}`);
     });
     this.pendingRequests.clear();
+  }
+
+  private rejectInteractivePending(reason: string): void {
+    this.pendingRequests.forEach((pending, requestId) => {
+      if (!pending.interactive) return;
+      clearTimeout(pending.timeout);
+      pending.resolve({ request_id: requestId, action: 'deny_terminate', reason });
+      this.pendingRequests.delete(requestId);
+      logger.warn(`[HITL] Request rejected (${reason}): ${requestId}`);
+    });
   }
 
   /**
