@@ -42,6 +42,8 @@ export class PolicyStore {
       device_ip_lock: true,
       remote_trigger_protection: true,
       active_llm_engine: 'ollama',
+      high_risk_bins: [],
+      blocked_instrument_fingerprints: [],
       updated_at: new Date().toISOString(),
       version: '1.0.0',
     };
@@ -145,6 +147,16 @@ export class PolicyStore {
       if (!['ollama', 'claude', 'groq'].includes(value as string)) {
         throw new Error('active_llm_engine must be one of: ollama, claude, groq');
       }
+    } else if (field === 'high_risk_bins') {
+      if (!Array.isArray(value) || value.some((bin) => typeof bin !== 'string' || !/^\d{6,8}$/.test(bin))) {
+        throw new Error('high_risk_bins must be an array of 6 to 8 digit BIN strings.');
+      }
+      value = [...new Set(value as string[])];
+    } else if (field === 'blocked_instrument_fingerprints') {
+      if (!Array.isArray(value) || value.some((fingerprint) => typeof fingerprint !== 'string' || !fingerprint.trim() || fingerprint.length > 256)) {
+        throw new Error('blocked_instrument_fingerprints must be an array of non-empty fingerprint strings up to 256 characters.');
+      }
+      value = [...new Set((value as string[]).map((fingerprint) => fingerprint.trim()))];
     }
 
     // Update policy

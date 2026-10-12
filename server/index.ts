@@ -89,35 +89,84 @@ logger.setBridge(bridge);
 const anomalyEngine = new AnomalyEngine();
 
 async function reportMcpActivity(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
-  const required = ['agent_id', 'agent_name', 'action'];
-  if (required.some((key) => typeof input[key] !== 'string' || !(input[key] as string).trim())) {
-    throw new Error('agent_id, agent_name, and action are required strings.');
+  const accountId = typeof input.account_id === 'string' ? input.account_id : input.agent_id;
+  if (typeof accountId !== 'string' || !accountId.trim() || typeof input.action !== 'string' || !input.action.trim()) {
+    throw new Error('account_id (or legacy agent_id) and action are required strings.');
   }
-  if (!['low', 'medium', 'high'].includes(String(input.risk_level))) {
+  if (input.risk_level !== undefined && !['low', 'medium', 'high'].includes(String(input.risk_level))) {
     throw new Error('risk_level must be low, medium, or high.');
   }
-  if (input.amount_usd !== undefined && (typeof input.amount_usd !== 'number' || !Number.isFinite(input.amount_usd) || input.amount_usd < 0)) {
-    throw new Error('amount_usd must be a non-negative finite number.');
+  const amount = input.amount_usd ?? input.amount;
+  if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0)) {
+    throw new Error('amount must be a non-negative finite number.');
   }
-  const agentId = input.agent_id as string;
+  const agentId = accountId.trim();
+  const eventType = input.event_type === undefined ? 'transaction' : input.event_type;
+  if (!['transaction', 'login', 'password_change', 'payout_change', 'account_update', 'other'].includes(String(eventType))) {
+    throw new Error('event_type is invalid.');
+  }
+  const accountType = input.account_type === undefined ? 'personal' : input.account_type;
+  if (accountType !== 'personal' && accountType !== 'business') throw new Error('account_type must be personal or business.');
+  const direction = input.event_direction === undefined
+    ? (/receive|incoming|payment_received|credit/i.test(input.action) ? 'incoming' : 'outgoing')
+    : input.event_direction;
+  if (direction !== 'incoming' && direction !== 'outgoing') throw new Error('event_direction must be incoming or outgoing.');
+  for (const field of ['payer_id', 'payer_device_id', 'instrument_fingerprint', 'card_bin', 'payer_country', 'instrument_country']) {
+    if (input[field] !== undefined && typeof input[field] !== 'string') throw new Error(`${field} must be a string.`);
+  }
+  if (input.card_bin !== undefined && !/^\d{6,8}$/.test(input.card_bin as string)) throw new Error('card_bin must contain 6 to 8 digits.');
+  if (input.high_risk_bin !== undefined && typeof input.high_risk_bin !== 'boolean' || input.known_bad_instrument !== undefined && typeof input.known_bad_instrument !== 'boolean') {
+    throw new Error('high_risk_bin and known_bad_instrument must be booleans.');
+  }
   const event: AgentActivityEvent = {
     type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
-    agent_id: agentId, agent_name: input.agent_name as string, action: input.action as string,
-    risk_level: input.risk_level as AgentActivityEvent['risk_level'],
-    details: input.details && typeof input.details === 'object' && !Array.isArray(input.details)
-      ? input.details as Record<string, unknown> : {},
+    agent_id: agentId, account_id: agentId, event_type: eventType as AgentActivityEvent['event_type'],
+    account_type: accountType,
+    event_direction: direction,
+    agent_name: typeof input.agent_name === 'string' ? input.agent_name : `PayPal account ${agentId}`, action: input.action,
+    risk_level: (input.risk_level ?? 'low') as AgentActivityEvent['risk_level'],
+    details: {
+      ...(input.details && typeof input.details === 'object' && !Array.isArray(input.details) ? input.details as Record<string, unknown> : {}),
+      payment: { amount: amount ?? null, currency: input.currency ?? 'USD', merchant_id: input.merchant_id ?? null, transaction_id: input.transaction_id ?? null, account_type: accountType, direction },
+      session: { ip_address: input.ip_address ?? null, device_id: input.device_id ?? null, location: input.location ?? null },
+    },
   };
   auditAnchor.record('agent_activity', {
     agent_id: agentId, action: event.action, risk_level: event.risk_level,
     runtime: runtimeName, actor_id: identity.id, source: 'mcp',
   });
   const metadata = {
-    amount_usd: input.amount_usd as number | undefined,
+    account_id: agentId,
+    event_type: event.event_type,
+    account_type: event.account_type,
+    event_direction: event.event_direction,
+    amount_usd: amount as number | undefined,
+    amount: amount as number | undefined,
+    currency: input.currency as string | undefined,
     ip_address: input.ip_address as string | undefined,
     device_id: input.device_id as string | undefined,
+    location: input.location as string | undefined,
+    merchant_id: input.merchant_id as string | undefined,
+    transaction_id: input.transaction_id as string | undefined,
+    payer_id: input.payer_id as string | undefined,
+    payer_device_id: input.payer_device_id as string | undefined,
+    instrument_fingerprint: input.instrument_fingerprint as string | undefined,
+    card_bin: input.card_bin as string | undefined,
+    high_risk_bin: input.high_risk_bin as boolean | undefined,
+    known_bad_instrument: input.known_bad_instrument as boolean | undefined,
+    payer_country: input.payer_country as string | undefined,
+    instrument_country: input.instrument_country as string | undefined,
     contract_address: input.contract_address as string | undefined,
   };
   const result = await anomalyEngine.processActivity(event, metadata, policyStore.getPolicy());
+  auditAnchor.record('payguard_activity_assessed', {
+    account_id: agentId, event_id: event.id, event_type: event.event_type,
+    account_type: event.account_type, event_direction: event.event_direction,
+    risk_score: result.evaluation.anomaly_score, action: result.evaluation.recommended_action,
+    merchant_recommendation: result.evaluation.merchant_recommendation,
+    rules: result.evaluation.rules_triggered.map((rule) => rule.rule_id), jev: result.evaluation.jev,
+    runtime: runtimeName, source: 'mcp',
+  });
   bridge.broadcastEvent(event);
   logger.broadcastEvent(event);
   if (result.anomaly_event) {
@@ -128,7 +177,7 @@ async function reportMcpActivity(input: Record<string, unknown>, identity: NonNu
     const hitlEvent: HITLRequestEvent = {
       type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
       request_id: `req_${crypto.randomUUID()}`, agent_id: agentId, incident_type: 'anomaly_detected',
-      context: { anomaly_score: result.evaluation.anomaly_score, rules: result.evaluation.rules_triggered, activity: event },
+      context: { anomaly_score: result.evaluation.anomaly_score, rules: result.evaluation.rules_triggered, jev: result.evaluation.jev, merchant_recommendation: result.evaluation.merchant_recommendation, activity: event },
       action_options: ['allow_once', 'allow_session', 'deny_terminate'],
       expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
     };
@@ -408,7 +457,7 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
       chain: Awaited<ReturnType<typeof chainAdapter.health>>;
     } = {
-      status: chain.healthy ? 'ok' : 'degraded',
+      status: runtimeBridge.isConnected() ? 'ok' : 'degraded',
       daemon_connected: runtimeBridge.isConnected(),
       timestamp: new Date().toISOString(),
       version: '1.0.0',
@@ -482,7 +531,7 @@ app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request,
     const event: Event = {
       type: 'policy_update',
       timestamp: new Date().toISOString(),
-      id: `evt_${Date.now()}`,
+      id: `evt_${crypto.randomUUID()}`,
       field,
       old_value: null, // TODO: Track old value in policyStore
       new_value: value,
@@ -551,7 +600,7 @@ app.post('/api/policy/reset', apiAuthenticator.requireAnyRole('admin'), (req: Re
 });
 
 // Simulate agent activity (for testing)
-app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
+app.post(['/api/events/activity', '/api/events/agent-activity'], apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
   try {
     const {
       agent_id,
@@ -559,6 +608,24 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       action,
       risk_level,
       details,
+      account_id,
+      event_type,
+      account_type,
+      event_direction,
+      direction,
+      amount,
+      currency,
+      location,
+      merchant_id,
+      transaction_id,
+      payer_id,
+      payer_device_id,
+      instrument_fingerprint,
+      card_bin,
+      high_risk_bin,
+      known_bad_instrument,
+      payer_country,
+      instrument_country,
       amount_usd,
       ip_address,
       device_id,
@@ -573,20 +640,72 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       return;
     }
 
+    const accountId = typeof account_id === 'string' && account_id.trim() ? account_id.trim() : agent_id;
+    const normalizedEventType = event_type ?? 'transaction';
+    const normalizedAccountType = account_type ?? 'personal';
+    const inferredDirection = /receive|incoming|payment_received|credit/i.test(typeof action === 'string' ? action : '') ? 'incoming' : 'outgoing';
+    const normalizedDirection = event_direction ?? direction ?? inferredDirection;
+    const optionalTextFields = { agent_name, action, currency, ip_address, device_id, location, merchant_id, transaction_id, payer_id, payer_device_id, instrument_fingerprint, card_bin, payer_country, instrument_country };
+    const invalidTextField = Object.entries(optionalTextFields).find(([key, value]) => value !== undefined && (typeof value !== 'string' || (key === 'currency' && value.length > 8)));
+    if (invalidTextField) {
+      res.status(400).json({ success: false, error: `${invalidTextField[0]} must be a string${invalidTextField[0] === 'currency' ? ' of at most 8 characters' : ''}.` });
+      return;
+    }
+    if (typeof accountId !== 'string' || !accountId.trim()) {
+      res.status(400).json({ success: false, error: 'account_id is required.' });
+      return;
+    }
+    if (!['transaction', 'login', 'password_change', 'payout_change', 'account_update', 'other'].includes(normalizedEventType)) {
+      res.status(400).json({ success: false, error: 'event_type must be transaction, login, password_change, payout_change, account_update, or other.' });
+      return;
+    }
+    if (!['personal', 'business'].includes(normalizedAccountType) || !['incoming', 'outgoing'].includes(normalizedDirection)) {
+      res.status(400).json({ success: false, error: 'account_type must be personal or business and event_direction must be incoming or outgoing.' });
+      return;
+    }
+    if (card_bin !== undefined && !/^\d{6,8}$/.test(card_bin.replace(/\s|-/g, ''))) {
+      res.status(400).json({ success: false, error: 'card_bin must contain 6 to 8 digits.' });
+      return;
+    }
+    if ((high_risk_bin !== undefined && typeof high_risk_bin !== 'boolean') || (known_bad_instrument !== undefined && typeof known_bad_instrument !== 'boolean')) {
+      res.status(400).json({ success: false, error: 'high_risk_bin and known_bad_instrument must be booleans.' });
+      return;
+    }
+    const eventAmount = amount_usd ?? amount;
+    if (eventAmount !== undefined && (typeof eventAmount !== 'number' || !Number.isFinite(eventAmount) || eventAmount < 0)) {
+      res.status(400).json({ success: false, error: 'amount must be a non-negative finite number.' });
+      return;
+    }
+    if (risk_level !== undefined && !['low', 'medium', 'high'].includes(risk_level)) {
+      res.status(400).json({ success: false, error: 'risk_level must be low, medium, or high.' });
+      return;
+    }
     const event: AgentActivityEvent = {
       type: 'agent_activity',
       timestamp: new Date().toISOString(),
       id: `evt_${Date.now()}`,
-      agent_id,
-      agent_name,
-      action,
-      risk_level,
-      details: details || {},
+      agent_id: accountId,
+      account_id: accountId,
+      event_type: normalizedEventType,
+      account_type: normalizedAccountType,
+      event_direction: normalizedDirection,
+      agent_name: agent_name || `PayPal account ${accountId}`,
+      action: action || normalizedEventType,
+      risk_level: risk_level || 'low',
+      details: {
+        ...(details && typeof details === 'object' && !Array.isArray(details) ? details : {}),
+        payment: { amount: eventAmount, currency: currency || 'USD', merchant_id: merchant_id || null, transaction_id: transaction_id || null, account_type: normalizedAccountType, direction: normalizedDirection, card_bin: card_bin || null, payer_country: payer_country || null, instrument_country: instrument_country || null },
+        session: { ip_address: ip_address || null, device_id: device_id || null, location: location || null },
+      },
     };
     auditAnchor.record('agent_activity', {
-      agent_id,
-      action,
-      risk_level,
+      agent_id: accountId,
+      account_id: accountId,
+      event_type: normalizedEventType,
+      account_type: normalizedAccountType,
+      direction: normalizedDirection,
+      action: event.action,
+      risk_level: event.risk_level,
       runtime: runtimeName,
       actor_id: req.asguardIdentity?.id,
     });
@@ -598,13 +717,43 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
     const anomalyResult = await anomalyEngine.processActivity(
       event,
       {
-        amount_usd,
+        account_id: accountId,
+        event_type: normalizedEventType,
+        account_type: normalizedAccountType,
+        event_direction: normalizedDirection,
+        amount_usd: eventAmount,
+        amount: eventAmount,
+        currency,
         ip_address,
         device_id,
+        location,
+        merchant_id,
+        transaction_id,
+        payer_id,
+        payer_device_id,
+        instrument_fingerprint,
+        card_bin,
+        high_risk_bin,
+        known_bad_instrument,
+        payer_country,
+        instrument_country,
         contract_address,
       },
       policy
     );
+    auditAnchor.record('payguard_activity_assessed', {
+      account_id: accountId,
+      event_id: event.id,
+      event_type: normalizedEventType,
+      account_type: normalizedAccountType,
+      event_direction: normalizedDirection,
+      risk_score: anomalyResult.evaluation.anomaly_score,
+      action: anomalyResult.evaluation.recommended_action,
+      merchant_recommendation: anomalyResult.evaluation.merchant_recommendation,
+      rules: anomalyResult.evaluation.rules_triggered.map((rule) => rule.rule_id),
+      jev: anomalyResult.evaluation.jev,
+      runtime: runtimeName,
+    });
 
     // Broadcast original event
     bridge.broadcastEvent(event);
@@ -623,11 +772,13 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
         timestamp: new Date().toISOString(),
         id: `hitl_${Date.now()}`,
         request_id: `req_${Date.now()}`,
-        agent_id,
+        agent_id: accountId,
         incident_type: 'anomaly_detected',
         context: {
           anomaly_score: anomalyResult.evaluation.anomaly_score,
           rules: anomalyResult.evaluation.rules_triggered,
+          jev: anomalyResult.evaluation.jev,
+          merchant_recommendation: anomalyResult.evaluation.merchant_recommendation,
           activity: event,
         },
         action_options: ['allow_once', 'allow_session', 'deny_terminate'],
@@ -646,7 +797,7 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
             type: 'audit_log',
             timestamp: new Date().toISOString(),
             id: `evt_${Date.now()}`,
-            agent_id,
+            agent_id: accountId,
             action: 'HITL Decision Applied',
             resource: hitlEvent.request_id,
             status: 'success',
@@ -660,6 +811,8 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       event,
       anomaly: anomalyResult.evaluation,
       hitl_triggered: anomalyResult.should_trigger_hitl,
+      recommended_action: anomalyResult.evaluation.recommended_action,
+      merchant_recommendation: anomalyResult.evaluation.merchant_recommendation,
     });
   } catch (error) {
     logger.error('[Server] Error creating agent activity event:', {

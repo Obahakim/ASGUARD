@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Asguard - AI Agent Security Dashboard",
-  description: "Local AI agent security and regulation system for the Astrid/Unicity ecosystem",
+  title: "Payguard - Payment Security Dashboard",
+  description: "Behavioral fraud monitoring and human review for payment and account activity",
   generator: 'v0.app'
 };
 

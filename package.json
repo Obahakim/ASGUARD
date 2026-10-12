@@ -27,6 +27,7 @@
     "asguard": "./scripts/asguard.sh"
   },
   "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
     "@emotion/is-prop-valid": "latest",
     "@types/topojson-client": "^3.1.5",
     "@unicitylabs/sphere-sdk": "0.17.7",

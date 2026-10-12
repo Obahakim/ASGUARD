@@ -4,6 +4,8 @@ export interface AsguardPolicy {
 	device_ip_lock: boolean;
 	remote_trigger_protection: boolean;
 	active_llm_engine: 'ollama' | 'claude' | 'groq';
+	high_risk_bins?: string[];
+	blocked_instrument_fingerprints?: string[];
 	updated_at?: string;
 	version?: string;
 }
@@ -32,6 +34,38 @@ export interface AgentActivityEvent extends BaseEvent {
 	action: string;
 	risk_level: 'low' | 'medium' | 'high';
 	details: Record<string, unknown>;
+	/** Payguard event context; agent_id remains the normalized internal account key. */
+	account_id?: string;
+	event_type?: 'transaction' | 'login' | 'password_change' | 'payout_change' | 'account_update' | 'other';
+	account_type?: AccountType;
+	event_direction?: EventDirection;
+}
+
+export type AccountType = 'personal' | 'business';
+export type EventDirection = 'incoming' | 'outgoing';
+
+export interface ActivityMetadata {
+	account_id?: string;
+	event_type?: AgentActivityEvent['event_type'];
+	account_type?: AccountType;
+	event_direction?: EventDirection;
+	amount_usd?: number;
+	amount?: number;
+	currency?: string;
+	ip_address?: string;
+	device_id?: string;
+	location?: string;
+	merchant_id?: string;
+	transaction_id?: string;
+	contract_address?: string;
+	payer_id?: string;
+	payer_device_id?: string;
+	instrument_fingerprint?: string;
+	card_bin?: string;
+	high_risk_bin?: boolean;
+	known_bad_instrument?: boolean;
+	payer_country?: string;
+	instrument_country?: string;
 }
 
 export interface CapabilityCheckEvent extends BaseEvent {
@@ -145,11 +179,16 @@ export interface AnomalyProfile {
 	agent_id: string;
 	baseline_trade_frequency: number;
 	baseline_avg_amount_usd: number;
+	baseline_amounts: Record<string, number>;
+	transaction_counts_by_currency: Record<string, number>;
 	baseline_ips: Set<string>;
 	baseline_devices: Set<string>;
 	first_seen: Date;
 	last_updated: Date;
 	observation_count: number;
+	transaction_count: number;
+	recent_event_timestamps: number[];
+	last_password_change_at?: number;
 }
 
 export interface EvaluationResult {
@@ -158,11 +197,29 @@ export interface EvaluationResult {
 	rules_triggered: RuleViolation[];
 	action: 'silent_pass' | 'warn' | 'halt_and_hitl';
 	confidence: number;
+	recommended_action?: 'allow' | 'notify' | 'challenge' | 'hold';
+	merchant_recommendation?: 'accept' | 'accept-with-review' | 'challenge' | 'decline';
+	jev?: JevJudgment;
 	timestamp: string;
 }
 
+export interface JevJudgment {
+	status: 'assessed' | 'unavailable' | 'disabled';
+	model?: string;
+	fraud_probability?: number;
+	confidence?: number;
+	suspicious_location?: number;
+	anomalous_amount?: number;
+	recommended_action?: 'allow' | 'notify' | 'challenge' | 'hold';
+	chargeback_probability?: number;
+	instrument_high_risk_probability?: number;
+	merchant_recommendation?: 'accept' | 'accept-with-review' | 'challenge' | 'decline';
+	decision?: string;
+	error?: string;
+}
+
 export interface RuleViolation {
-	rule_id: 'ip_breach' | 'budget_overrun' | 'frequency_spike' | 'unverified_contract';
+	rule_id: 'ip_breach' | 'budget_overrun' | 'frequency_spike' | 'unverified_contract' | 'amount_deviation' | 'account_change' | 'high_risk_bin' | 'payer_velocity' | 'geo_mismatch' | 'known_bad_instrument' | 'payer_device_change';
 	severity: 'high' | 'medium';
 	score_contribution: number;
 	details: Record<string, unknown>;
