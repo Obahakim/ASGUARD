@@ -4,14 +4,18 @@ import { ActivityMetadata, AgentActivityEvent, EvaluationResult, JevJudgment } f
 const client = process.env.TYPESAFE_API_KEY
   ? new TypeSafeClient({ timeout: 8_000, retry: { maxRetries: 0 }, logLevel: 'off' })
   : undefined;
+let jevDisplayStatus = client ? 'enabled' : 'JEV unavailable';
 
 export function getJevStatus() {
-  return { configured: Boolean(client), model: process.env.TYPESAFE_DEFAULT_MODEL || 'jev-latest' };
+  return { status: jevDisplayStatus };
 }
 
 /** Typed, structured Jev assessment. Missing credentials and provider errors never stop event ingestion. */
 export async function assessWithJev(activity: AgentActivityEvent, metadata: ActivityMetadata, baseline: Record<string, unknown>, rules: EvaluationResult): Promise<JevJudgment> {
-  if (!client) return { status: 'disabled', error: 'TYPESAFE_API_KEY is not configured.' };
+  if (!client) {
+    jevDisplayStatus = 'JEV unavailable';
+    return { status: 'disabled', error: 'TYPESAFE_API_KEY is not configured.' };
+  }
   try {
     const state = {
       account_type: metadata.account_type ?? activity.account_type ?? 'personal',
@@ -64,6 +68,7 @@ export async function assessWithJev(activity: AgentActivityEvent, metadata: Acti
       } });
       const action = response.answers.merchant_action.choice;
       const actionMap = { accept: 'allow', accept_with_review: 'notify', challenge: 'challenge', decline: 'hold' } as const;
+      jevDisplayStatus = 'enabled';
       return {
         status: 'assessed', model: response.model,
         fraud_probability: Math.min(1, Math.max(0, response.answers.fraud_probability.score / 4)),
@@ -99,6 +104,7 @@ export async function assessWithJev(activity: AgentActivityEvent, metadata: Acti
     });
     const fraud = response.answers.fraud_probability;
     const decision = response.answers.recommended_action;
+    jevDisplayStatus = 'enabled';
     return {
       status: 'assessed', model: response.model,
       fraud_probability: Math.min(1, Math.max(0, fraud.score / 4)),
@@ -109,6 +115,7 @@ export async function assessWithJev(activity: AgentActivityEvent, metadata: Acti
       decision: `Jev selected ${decision.choice}; probability ${decision.probabilities[decision.choice].toFixed(2)}.`,
     };
   } catch (error) {
+    jevDisplayStatus = 'JEV unavailable';
     return { status: 'unavailable', error: error instanceof Error ? error.message : String(error) };
   }
 }

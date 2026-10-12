@@ -17,7 +17,7 @@ export default function Home() {
   const [pendingApprovals, setPendingApprovals] = useState<HITLRequestEvent[]>([]);
   const pendingApproval = pendingApprovals[0] ?? null;
   const [pipelineStatus, setPipelineStatus] = useState('Activity pipeline unavailable');
-  const [jevStatus, setJevStatus] = useState('Jev status unavailable');
+  const [jevStatus, setJevStatus] = useState('JEV unavailable');
   const [transactions, setTransactions] = useState<TransactionIntent[]>([]);
   useEffect(() => {
     const savedToken = window.sessionStorage.getItem('asguard_api_token') || '';
@@ -53,8 +53,8 @@ export default function Home() {
       if (Array.isArray(pending.requests)) setPendingApprovals(pending.requests);
       if (Array.isArray(txs.intents)) setTransactions(txs.intents);
       const jev = diagnostics.diagnostics?.jev;
-      if (jev) setJevStatus(jev.configured ? `Jev enabled · ${jev.model}` : 'Jev not configured · rules active');
-    }).catch(() => { if (!cancelled) setPipelineStatus('Could not load service status'); });
+      setJevStatus(jev?.status === 'enabled' ? 'enabled' : 'JEV unavailable');
+    }).catch(() => { if (!cancelled) { setPipelineStatus('Could not load service status'); setJevStatus('JEV unavailable'); } });
     return () => { cancelled = true; };
   }, [apiToken, events.length]);
   const auditEvents = events.filter((event) => event.type === 'audit_log');

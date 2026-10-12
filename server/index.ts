@@ -32,6 +32,7 @@ import { createTransactionIntent, getTransactionIntent, listTransactionIntents, 
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
 import { chainAdapter } from './aos/chainAdapter';
 import { handleMcpRequest } from './mcp';
+import { mapPayPalWebhook } from './paypalWebhookMapper';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -68,7 +69,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.vary('Origin');
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Asguard-Key');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Asguard-Key, X-PayPal-Webhook-Secret');
 
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
@@ -77,7 +78,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-app.use('/api', apiAuthenticator.authenticationMiddleware());
+// PayPal cannot use Payguard API credentials; this endpoint uses its own optional shared secret.
+app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+  if (/^\/webhooks\/paypal\/?$/.test(req.path)) { next(); return; }
+  apiAuthenticator.authenticationMiddleware()(req, res, next);
+});
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -193,6 +198,82 @@ async function reportMcpActivity(input: Record<string, unknown>, identity: NonNu
   }
   return { event, anomaly: result.evaluation, hitl_triggered: result.should_trigger_hitl };
 }
+
+app.post('/api/webhooks/paypal', async (req: Request, res: Response) => {
+  try {
+    const configuredSecret = process.env.PAYPAL_WEBHOOK_SECRET;
+    if (configuredSecret) {
+      const suppliedSecret = req.get('X-PayPal-Webhook-Secret') ?? (typeof req.query.secret === 'string' ? req.query.secret : '');
+      const expected = Buffer.from(configuredSecret, 'utf8');
+      const received = Buffer.from(suppliedSecret, 'utf8');
+      if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+        res.status(401).json({ success: false, error: 'Invalid PayPal webhook shared secret.' });
+        return;
+      }
+    }
+
+    const mapped = mapPayPalWebhook(req.body);
+    if (!mapped.event || !mapped.metadata) {
+      logger.info('[PayPal webhook] Accepted unmapped event; no anomaly evaluation performed.', { reason: mapped.unmappedReason });
+      auditAnchor.record('paypal_webhook_unmapped', { reason: mapped.unmappedReason, event_type: (req.body as Record<string, unknown>)?.event_type ?? null });
+      res.status(202).json({ received: true, mapped: false, reason: mapped.unmappedReason });
+      return;
+    }
+
+    const { event, metadata } = mapped;
+    auditAnchor.record('paypal_webhook_received', {
+      account_id: event.account_id, event_id: event.id, event_type: metadata.event_type,
+      account_type: metadata.account_type, event_direction: metadata.event_direction,
+    });
+    const result = await anomalyEngine.processActivity(event, metadata, policyStore.getPolicy());
+    auditAnchor.record('payguard_activity_assessed', {
+      account_id: event.account_id, event_id: event.id, event_type: metadata.event_type,
+      account_type: metadata.account_type, event_direction: metadata.event_direction,
+      risk_score: result.evaluation.anomaly_score, action: result.evaluation.recommended_action,
+      merchant_recommendation: result.evaluation.merchant_recommendation,
+      rules: result.evaluation.rules_triggered.map((rule) => rule.rule_id), jev: result.evaluation.jev,
+      source: 'paypal_webhook',
+    });
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+    if (result.anomaly_event) {
+      bridge.broadcastEvent(result.anomaly_event);
+      logger.broadcastEvent(result.anomaly_event);
+    }
+    if (result.should_trigger_hitl) {
+      const hitlEvent: HITLRequestEvent = {
+        type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
+        request_id: `req_${crypto.randomUUID()}`, agent_id: event.agent_id, incident_type: 'anomaly_detected',
+        context: {
+          anomaly_score: result.evaluation.anomaly_score, rules: result.evaluation.rules_triggered,
+          jev: result.evaluation.jev, merchant_recommendation: result.evaluation.merchant_recommendation,
+          source: 'paypal_webhook', activity: event,
+        },
+        action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+        expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+      bridge.broadcastEvent(hitlEvent);
+      logger.broadcastEvent(hitlEvent);
+      void hitlHandler.handleRequest(hitlEvent).then((decision) => {
+        bridge.broadcastEvent({
+          type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+          agent_id: event.agent_id, action: 'HITL Decision Applied', resource: hitlEvent.request_id,
+          status: 'success', details: decision as unknown as Record<string, unknown>,
+        });
+      }).catch((error) => logger.error('[PayPal webhook] HITL handler error:', { error: String(error) }));
+    }
+
+    res.json({
+      received: true, mapped: true, event_id: event.id,
+      recommended_action: result.evaluation.recommended_action,
+      merchant_recommendation: result.evaluation.merchant_recommendation,
+      score: result.evaluation.anomaly_score, hitl_triggered: result.should_trigger_hitl,
+    });
+  } catch (error) {
+    logger.error('[PayPal webhook] Invalid or failed webhook payload:', { error: String(error) });
+    res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid PayPal webhook payload.' });
+  }
+});
 
 async function reportMcpViolation(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
   if (typeof input.agent_id !== 'string' || !input.agent_id.trim() || typeof input.violation_type !== 'string' || !input.violation_type.trim()) {
@@ -1052,6 +1133,10 @@ app.use((req: Request, res: Response) => {
 
 // Error handler
 app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
+  if ((error as Error & { type?: string }).type === 'entity.parse.failed') {
+    res.status(400).json({ success: false, error: 'Malformed JSON request body.' });
+    return;
+  }
   logger.error('[Server] Unhandled error:', { error: error.message });
   res.status(500).json({
     error: 'Internal server error',
@@ -1108,6 +1193,9 @@ httpServer.listen(Number(PORT), HOST as string, () => {
   logger.info(
     `[Server] Policy file: ${policyStore.getPolicyPath()}`
   );
+  if (!process.env.PAYPAL_WEBHOOK_SECRET) {
+    logger.warn('[Server] PayPal webhook shared secret is not configured; signature verification is disabled. Configure PAYPAL_WEBHOOK_SECRET for shared-secret checks.');
+  }
 
   // Broadcast connection status
   const connectionEvent: Event = {
