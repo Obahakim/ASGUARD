@@ -4,7 +4,7 @@
  */
 
 import { Server as HTTPServer } from 'http';
-import WebSocket, { Server as WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import {
   Event,
   EventType,
@@ -246,9 +246,20 @@ export class WebSocketBridge {
     clientId: string,
     response: HITLResponse
   ): void {
-    logger.info(`[Bridge] HITL response from ${clientId}:`, response as unknown as Record<string, unknown>);
-    // This would integrate with astridd to apply the decision
-    // For now, just log it
+    if (!response || typeof response.request_id !== 'string' ||
+      !['allow_once', 'allow_session', 'deny_terminate'].includes(response.action)) {
+      this.sendError(this.clients.get(clientId)!.ws, 'Invalid HITL response.');
+      return;
+    }
+    const identity = this.clients.get(clientId)?.identity;
+    const request = hitlHandler.respond({ ...response, actor_id: identity?.id });
+    if (!request) {
+      this.sendError(this.clients.get(clientId)!.ws, 'Approval request is no longer pending.');
+      return;
+    }
+    logger.info(`[Bridge] HITL response applied from ${clientId}:`, {
+      request_id: response.request_id, action: response.action,
+    });
   }
 
   /**

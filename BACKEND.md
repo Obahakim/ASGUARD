@@ -503,21 +503,28 @@ All errors are logged with context:
 ## Security Considerations
 
 - Policy file permissions: User-only (implicit via ~/.astrid)
-- WebSocket: No auth (localhost-only for now)
-- STDIN/STDOUT: Terminal-only (no network exposure)
+- REST and MCP endpoints require configured API credentials with role checks
+- WebSocket tickets are short-lived and single-use; ticketed connections are origin-checked
+- Human decisions are accepted from authenticated admin/operator roles
 - Credentials: Never logged or broadcast
-- CORS: Permissive (localhost development)
+- CORS: restricted to `ASGUARD_ALLOWED_ORIGINS`; use HTTPS/WSS through a trusted reverse proxy for remote access
+
+## Solana Devnet and MCP
+
+The current chain adapter targets Solana devnet and verifies the devnet genesis hash before simulation or submission. MCP clients use `POST /mcp` with a bearer API credential. The tool set includes `asguard_get_status`, `asguard_get_policy`, `asguard_get_transaction_status`, `asguard_report_activity`, `asguard_report_security_violation`, and `asguard_guarded_solana_send`.
+
+The guarded send path stores an idempotent intent, evaluates agent activity, simulates the signed transaction, requests human approval, and submits only after approval. The local demo client is `pnpm demo:trader`; it creates synthetic activity and compromise-alert events only, without a wallet or transaction. See `SOLANA_MCP_SETUP.md` for Claude Code configuration and test steps.
+
+The demo and MCP control plane do not terminate an independent bot process. A bot can bypass ASGUARD if it can broadcast directly, so production deployment must constrain RPC egress and signing authority. Transaction amount is currently caller-declared and unverified, which is why all sends wait for a human.
 
 ## Future Enhancements
 
-1. **Authentication**: JWT tokens for remote access
-2. **TLS/SSL**: Encrypted WebSocket connections
-3. **Daemon Integration**: Connect to astridd socket
-4. **Database**: Persist audit logs to PostgreSQL/SQLite
-5. **Metrics**: Prometheus-compatible endpoint
-6. **Clustering**: Multiple server instances with load balancing
-7. **Rate Limiting**: DDoS protection for REST API
-8. **Event Replay**: Resend historical events to new clients
+1. **Daemon Integration**: Connect to astridd socket
+2. **Durable audit storage**: Persist complete audit events to PostgreSQL/SQLite
+3. **Metrics**: Prometheus-compatible endpoint
+4. **Clustering**: Multiple server instances with load balancing
+5. **Rate Limiting**: DDoS protection for REST and MCP APIs
+6. **Event Replay**: Resend historical events to new clients
 
 ## Support & Debugging
 

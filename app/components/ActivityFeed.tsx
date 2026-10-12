@@ -1,105 +1,16 @@
 'use client';
 
-import { AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import type { Event } from '../../server/types';
 
-const activities = [
-  {
-    id: 1,
-    timestamp: '14:32:18',
-    agent: 'Trader-Bot-01',
-    action: 'Execute Trade Order',
-    risk: 'Low',
-    status: 'Allowed',
-    color: 'bg-green-500/10 border-green-500/30',
-  },
-  {
-    id: 2,
-    timestamp: '14:31:45',
-    agent: 'DeFi-Yield-Agent',
-    action: 'Swap Tokens',
-    risk: 'Medium',
-    status: 'Audited',
-    color: 'bg-yellow-500/10 border-yellow-500/30',
-  },
-  {
-    id: 3,
-    timestamp: '14:30:12',
-    agent: 'Portfolio-Monitor',
-    action: 'Rebalance Portfolio',
-    risk: 'Low',
-    status: 'Allowed',
-    color: 'bg-green-500/10 border-green-500/30',
-  },
-  {
-    id: 4,
-    timestamp: '14:28:33',
-    agent: 'Trader-Bot-01',
-    action: 'Fetch Market Data',
-    risk: 'Low',
-    status: 'Allowed',
-    color: 'bg-green-500/10 border-green-500/30',
-  },
-];
-
-const getRiskColor = (risk: string) => {
-  switch (risk) {
-    case 'Low':
-      return 'text-green-400';
-    case 'Medium':
-      return 'text-yellow-400';
-    case 'High':
-      return 'text-red-400';
-    default:
-      return 'text-slate-400';
-  }
-};
-
-const getStatusIcon = (status: string) => {
-  return status === 'Allowed' ? (
-    <CheckCircle className="w-4 h-4 text-green-400" />
-  ) : (
-    <Clock className="w-4 h-4 text-yellow-400" />
-  );
-};
-
-export default function ActivityFeed() {
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="p-2 bg-cyan-500/10 rounded-lg">
-          <AlertCircle className="w-5 h-5 text-cyan-400" />
-        </div>
-        <h2 className="text-lg font-semibold text-slate-100">Observed Agents & Activity</h2>
-      </div>
-
-      <div className="space-y-2 flex-1 overflow-y-auto pr-2">
-        {activities.map((activity) => (
-          <div
-            key={activity.id}
-            className={`p-3 rounded-lg border ${activity.color} hover:bg-slate-900/50 transition cursor-pointer`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-mono text-slate-400">{activity.timestamp}</span>
-                  <span className="text-sm font-semibold text-slate-100 truncate">{activity.agent}</span>
-                </div>
-                <p className="text-sm text-slate-300">{activity.action}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                {getStatusIcon(activity.status)}
-                <span className={`text-xs font-mono ${getRiskColor(activity.risk)}`}>{activity.risk}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-4 pt-4 border-t asguard-border">
-        <button className="w-full px-3 py-2 bg-slate-900 hover:bg-slate-800 text-slate-100 text-sm rounded transition border asguard-border">
-          View All Logs
-        </button>
-      </div>
-    </div>
-  );
+export default function ActivityFeed({ events }: { events: Event[] }) {
+  const items = events.filter((event) => ['agent_activity', 'security_violation', 'anomaly_detected'].includes(event.type)).slice(-30).reverse();
+  return <div className="h-full flex flex-col">
+    <div className="flex items-center gap-2 mb-4"><div className="p-2 bg-cyan-500/10 rounded-lg"><AlertCircle className="w-5 h-5 text-cyan-400" /></div><h2 className="text-lg font-semibold text-slate-100">Observed Agents & Activity</h2></div>
+    <div className="space-y-2 flex-1 overflow-y-auto pr-2">{items.length === 0 ? <p className="rounded-lg border asguard-border bg-slate-800/50 p-3 text-sm text-slate-400">No agent activity has been reported on the live bridge.</p> : items.map((event) => <div key={event.id} className="p-3 rounded-lg border asguard-border bg-slate-800/40">
+      <div className="flex items-center justify-between gap-3"><span className="text-xs font-mono text-slate-400">{new Date(event.timestamp).toLocaleTimeString()}</span><span className="text-xs font-mono text-cyan-300">{event.type.replaceAll('_', ' ')}</span></div>
+      <p className="mt-1 text-sm font-semibold text-slate-100">{'agent_id' in event ? event.agent_id : 'System'}</p>
+      <p className="text-sm text-slate-300">{event.type === 'agent_activity' ? event.action : event.type === 'security_violation' ? event.violation_type : event.type === 'anomaly_detected' ? event.anomaly_type : ''}</p>
+    </div>)}</div>
+  </div>;
 }

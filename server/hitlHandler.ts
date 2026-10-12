@@ -42,7 +42,8 @@ export class HITLHandler {
    * Handle HITL request
    */
   public async handleRequest(
-    event: HITLRequestEvent
+    event: HITLRequestEvent,
+    interactive = true
   ): Promise<HITLResponse> {
     const requestId = event.request_id;
 
@@ -74,7 +75,7 @@ export class HITLHandler {
       });
 
       // Prompt user in terminal
-      this.promptUser(event)
+      if (interactive) this.promptUser(event)
         .then((action) => {
           clearTimeout(timeout);
           this.pendingRequests.delete(requestId);
@@ -194,6 +195,17 @@ export class HITLHandler {
    */
   public getPendingRequests(): Map<string, PendingRequest> {
     return new Map(this.pendingRequests);
+  }
+
+  /** Resolve a pending request from an authenticated dashboard/API operator. */
+  public respond(response: HITLResponse): HITLRequestEvent | undefined {
+    const pending = this.pendingRequests.get(response.request_id);
+    if (!pending) return undefined;
+    clearTimeout(pending.timeout);
+    this.pendingRequests.delete(response.request_id);
+    pending.resolve(response);
+    logger.success(`[HITL] Request resolved by operator: ${response.request_id}`, { action: response.action });
+    return pending.event;
   }
 
   /**

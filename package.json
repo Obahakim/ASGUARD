@@ -13,6 +13,7 @@
     "lint": "eslint",
     "start": "next start",
     "backend:start": "node dist/server/index.js",
+    "demo:trader": "node --env-file=.env --import tsx scripts/demo-trader.ts",
     "build:capsule": "cd capsule && cargo build --release",
     "install:local": "./install.sh",
     "daemon:start": "./scripts/asguard.sh start",

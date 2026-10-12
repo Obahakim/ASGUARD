@@ -294,3 +294,31 @@ The backend is ready for integration with the Astrid daemon (`astridd`):
 - Logging infrastructure complete
 
 **Status: Production-ready for local development** 🚀
+
+---
+
+# Solana Devnet and MCP Integration
+
+## Implemented in the current workspace
+
+- [x] Chain adapter boundary with a Solana devnet implementation
+- [x] HTTPS RPC validation and devnet genesis verification before simulation or submission
+- [x] Authenticated Streamable HTTP MCP endpoint at `/mcp`
+- [x] MCP tools for status, policy read, transaction status, activity reporting, security violation reporting, and guarded Solana sends
+- [x] Guarded send creates an idempotent transaction intent and audits/evaluates before simulation
+- [x] Failed simulation blocks the intent; successful simulation waits for an authenticated human decision before submission
+- [x] Transaction idempotency ledger persists locally at `~/.astrid/transaction_intents.json` by default
+- [x] Dashboard streams live activity/anomaly events, displays transaction intents, loads/saves backend policy, and resolves pending approvals
+- [x] Free paper-trader MCP client at `pnpm demo:trader`; it generates synthetic events only and submits no transactions
+- [x] Claude Code HTTP MCP connection instructions and Claude Desktop remote-connector constraints documented in `SOLANA_MCP_SETUP.md`
+
+## Still required before production or unattended trading
+
+- [ ] A reviewed transaction instruction decoder and trusted amount/valuation source; until then every signed transaction requires human approval
+- [ ] Controlled signer and network egress rules so an agent cannot bypass the guarded broadcaster
+- [ ] Confirmation polling and transition from `submitted` to `confirmed` (the current guarded sender records RPC submission)
+- [ ] Durable operator identity/session management and production deployment hardening
+- [ ] A separately reviewed production chain adapter; mainnet is deliberately rejected by the current Solana devnet adapter
+- [ ] Clean repository-wide typecheck and backend runtime validation (existing project diagnostics remain outside the changed integration files)
+
+See `SOLANA_MCP_SETUP.md` for setup and Claude connection instructions.

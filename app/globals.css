@@ -3,6 +3,8 @@
 :root {
   --background: #0f172a;
   --foreground: #e2e8f0;
+  --font-geist-sans: Arial, ui-sans-serif, system-ui, sans-serif;
+  --font-geist-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   
   /* Asguard Security System Colors */
   --ds-background-100: #0f172a;

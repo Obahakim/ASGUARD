@@ -24,15 +24,17 @@ interface UseBridgeConnection {
   sendMessage: (type: string, payload: unknown) => void;
 }
 
+const EMPTY_EVENT_TYPES: EventType[] = [];
+
 export function useBridgeConnection(
   onEvent?: (event: Event) => void,
   options: BridgeOptions = {}
 ): UseBridgeConnection {
   const {
     url = typeof window !== 'undefined'
-      ? `ws://${window.location.hostname}:8080/ws`
+      ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080/ws`
       : 'ws://localhost:8080/ws',
-    eventTypes = [],
+    eventTypes = EMPTY_EVENT_TYPES,
     autoConnect = true,
     getWebSocketTicket,
   } = options;

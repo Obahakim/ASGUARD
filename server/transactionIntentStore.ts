@@ -1,8 +1,42 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import type { TransactionIntent, TransactionIntentStatus, TransactionSimulation } from './types';
 import { persistIntent } from './neonStore';
 
 const intents = new Map<string, TransactionIntent>();
+const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.astrid', 'transaction_intents.json');
+
+function persistLocalIntents(): void {
+  const directory = path.dirname(intentFile);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${intentFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify([...intents.values()], null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporary, intentFile);
+  } catch (error) {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    throw error;
+  }
+}
+
+function loadLocalIntents(): void {
+  if (!fs.existsSync(intentFile)) return;
+  const parsed: unknown = JSON.parse(fs.readFileSync(intentFile, 'utf8'));
+  if (!Array.isArray(parsed)) throw new Error('Transaction intent store is malformed; refusing to start with an empty idempotency ledger.');
+  for (const value of parsed) {
+    if (!value || typeof value !== 'object' || typeof (value as TransactionIntent).id !== 'string' ||
+      typeof (value as TransactionIntent).idempotency_key !== 'string' ||
+      !Object.prototype.hasOwnProperty.call(transitions, (value as TransactionIntent).status)) {
+      throw new Error('Transaction intent store contains an invalid record; refusing to start.');
+    }
+    const intent = value as TransactionIntent;
+    const duplicateKey = [...intents.values()].some((existing) => existing.idempotency_key === intent.idempotency_key);
+    if (duplicateKey || intents.has(intent.id)) throw new Error('Transaction intent store contains duplicate identities.');
+    intents.set(intent.id, intent);
+  }
+}
 
 const transitions: Record<TransactionIntentStatus, TransactionIntentStatus[]> = {
   created: ['evaluating', 'expired'],
@@ -17,6 +51,8 @@ const transitions: Record<TransactionIntentStatus, TransactionIntentStatus[]> = 
   expired: [],
   failed: [],
 };
+
+loadLocalIntents();
 
 function now(): string {
   return new Date().toISOString();
@@ -37,6 +73,12 @@ export function createTransactionIntent(
     updated_at: timestamp,
   };
   intents.set(intent.id, intent);
+  try {
+    persistLocalIntents();
+  } catch (error) {
+    intents.delete(intent.id);
+    throw error;
+  }
   void persistIntent(intent).catch(() => undefined);
   return intent;
 }
@@ -47,6 +89,12 @@ export function transitionTransactionIntent(id: string, status: TransactionInten
   if (!transitions[intent.status].includes(status)) throw new Error(`invalid transition: ${intent.status} -> ${status}`);
   const updated = { ...intent, status, updated_at: now() };
   intents.set(id, updated);
+  try {
+    persistLocalIntents();
+  } catch (error) {
+    intents.set(id, intent);
+    throw error;
+  }
   void persistIntent(updated).catch(() => undefined);
   return updated;
 }

@@ -4,6 +4,7 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
+import crypto from 'node:crypto';
 import http from 'http';
 import { WebSocketBridge } from './bridge';
 import { policyStore } from './policyStore';
@@ -27,8 +28,10 @@ import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
 import { UnicityAdapter } from './aos/unicityAdapter';
 import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
-import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
+import { createTransactionIntent, getTransactionIntent, listTransactionIntents, recordSimulation, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
+import { chainAdapter } from './aos/chainAdapter';
+import { handleMcpRequest } from './mcp';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -75,7 +78,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.use('/api', apiAuthenticator.authenticationMiddleware());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Initialize WebSocket bridge
@@ -84,6 +87,244 @@ logger.setBridge(bridge);
 
 // Initialize anomaly engine (Phase 3)
 const anomalyEngine = new AnomalyEngine();
+
+async function reportMcpActivity(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
+  const required = ['agent_id', 'agent_name', 'action'];
+  if (required.some((key) => typeof input[key] !== 'string' || !(input[key] as string).trim())) {
+    throw new Error('agent_id, agent_name, and action are required strings.');
+  }
+  if (!['low', 'medium', 'high'].includes(String(input.risk_level))) {
+    throw new Error('risk_level must be low, medium, or high.');
+  }
+  if (input.amount_usd !== undefined && (typeof input.amount_usd !== 'number' || !Number.isFinite(input.amount_usd) || input.amount_usd < 0)) {
+    throw new Error('amount_usd must be a non-negative finite number.');
+  }
+  const agentId = input.agent_id as string;
+  const event: AgentActivityEvent = {
+    type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: agentId, agent_name: input.agent_name as string, action: input.action as string,
+    risk_level: input.risk_level as AgentActivityEvent['risk_level'],
+    details: input.details && typeof input.details === 'object' && !Array.isArray(input.details)
+      ? input.details as Record<string, unknown> : {},
+  };
+  auditAnchor.record('agent_activity', {
+    agent_id: agentId, action: event.action, risk_level: event.risk_level,
+    runtime: runtimeName, actor_id: identity.id, source: 'mcp',
+  });
+  const metadata = {
+    amount_usd: input.amount_usd as number | undefined,
+    ip_address: input.ip_address as string | undefined,
+    device_id: input.device_id as string | undefined,
+    contract_address: input.contract_address as string | undefined,
+  };
+  const result = await anomalyEngine.processActivity(event, metadata, policyStore.getPolicy());
+  bridge.broadcastEvent(event);
+  logger.broadcastEvent(event);
+  if (result.anomaly_event) {
+    bridge.broadcastEvent(result.anomaly_event);
+    logger.broadcastEvent(result.anomaly_event);
+  }
+  if (result.should_trigger_hitl) {
+    const hitlEvent: HITLRequestEvent = {
+      type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
+      request_id: `req_${crypto.randomUUID()}`, agent_id: agentId, incident_type: 'anomaly_detected',
+      context: { anomaly_score: result.evaluation.anomaly_score, rules: result.evaluation.rules_triggered, activity: event },
+      action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    };
+    bridge.broadcastEvent(hitlEvent);
+    logger.broadcastEvent(hitlEvent);
+    void hitlHandler.handleRequest(hitlEvent).then((decision) => {
+      bridge.broadcastEvent({
+        type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+        agent_id: agentId, action: 'HITL Decision Applied', resource: hitlEvent.request_id,
+        status: 'success', details: decision as unknown as Record<string, unknown>,
+      });
+    }).catch((error) => logger.error('[MCP] HITL handler error:', { error: String(error) }));
+  }
+  return { event, anomaly: result.evaluation, hitl_triggered: result.should_trigger_hitl };
+}
+
+async function reportMcpViolation(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
+  if (typeof input.agent_id !== 'string' || !input.agent_id.trim() || typeof input.violation_type !== 'string' || !input.violation_type.trim()) {
+    throw new Error('agent_id and violation_type are required strings.');
+  }
+  if (!['low', 'medium', 'high', 'critical'].includes(String(input.severity))) {
+    throw new Error('severity must be low, medium, high, or critical.');
+  }
+  const context = input.context && typeof input.context === 'object' && !Array.isArray(input.context)
+    ? input.context as Record<string, unknown> : {};
+  const event: Event = {
+    type: 'security_violation', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: input.agent_id, violation_type: input.violation_type, severity: input.severity as 'low' | 'medium' | 'high' | 'critical',
+    requires_hitl: true, context: { ...context, source: 'mcp', reporter_id: identity.id },
+  };
+  auditAnchor.record('security_violation', {
+    agent_id: event.agent_id, violation_type: event.violation_type, severity: event.severity,
+    runtime: runtimeName, actor_id: identity.id, source: 'mcp',
+  });
+  bridge.broadcastEvent(event);
+  logger.broadcastEvent(event);
+
+  const request: HITLRequestEvent = {
+    type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
+    request_id: `req_${crypto.randomUUID()}`, agent_id: event.agent_id, incident_type: event.violation_type,
+    context: { ...context, severity: event.severity, reporter_id: identity.id },
+    action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+  };
+  bridge.broadcastEvent(request);
+  logger.broadcastEvent(request);
+  const decision = await hitlHandler.handleRequest(request, false);
+  auditAnchor.record('mcp_agent_intervention_decision', {
+    request_id: request.request_id, agent_id: event.agent_id, action: decision.action,
+    reporter_id: identity.id, operator_id: decision.actor_id ?? 'timeout', reason: decision.reason,
+  });
+  return { request_id: request.request_id, agent_id: event.agent_id, decision: decision.action, reason: decision.reason };
+}
+
+async function guardAndSendSolana(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
+  const stringFields = ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'transaction_base64'];
+  if (stringFields.some((field) => typeof input[field] !== 'string' || !(input[field] as string).trim())) {
+    throw new Error(`Required string fields: ${stringFields.join(', ')}.`);
+  }
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(input.idempotency_key as string)) {
+    throw new Error('idempotency_key must be 8–128 characters using letters, numbers, dot, underscore, colon, or dash.');
+  }
+  if (!['low', 'medium', 'high'].includes(String(input.risk_level)) || typeof input.amount_usd !== 'number' || !Number.isFinite(input.amount_usd) || input.amount_usd < 0) {
+    throw new Error('risk_level must be low, medium, or high and amount_usd must be a non-negative finite number.');
+  }
+  const transactionBase64 = input.transaction_base64 as string;
+  const payloadHash = crypto.createHash('sha256').update(transactionBase64, 'utf8').digest('hex');
+  let intent = createTransactionIntent({
+    idempotency_key: input.idempotency_key as string,
+    correlation_id: crypto.randomUUID(),
+    agent_id: input.agent_id as string,
+    wallet_id: input.wallet_id as string,
+    network: `${chainAdapter.chain}:${chainAdapter.network}`,
+    action: input.action as string,
+    resource: typeof input.contract_address === 'string' ? input.contract_address : 'solana-transaction',
+    payload_hash: payloadHash,
+    amount: input.amount_usd,
+    policy_version: policyStore.getPolicy().version,
+    risk_level: input.risk_level as 'low' | 'medium' | 'high',
+    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+  });
+  if (intent.agent_id !== input.agent_id || intent.wallet_id !== input.wallet_id || intent.network !== `${chainAdapter.chain}:${chainAdapter.network}` || intent.payload_hash !== payloadHash) {
+    throw new Error('idempotency_key is already bound to a different agent, wallet, network, or transaction payload.');
+  }
+  if (intent.status !== 'created') return { intent, duplicate: true, submitted: intent.status === 'submitted' || intent.status === 'confirmed' };
+  intent = transitionTransactionIntent(intent.id, 'evaluating');
+
+  const event: AgentActivityEvent = {
+    type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: intent.agent_id, agent_name: input.agent_name as string, action: intent.action,
+    risk_level: input.risk_level as AgentActivityEvent['risk_level'], details: { chain: intent.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
+  };
+  auditAnchor.record('guarded_transaction_requested', {
+    intent_id: intent.id, agent_id: intent.agent_id, wallet_id: intent.wallet_id,
+    network: intent.network, payload_hash: payloadHash, actor_id: identity.id,
+  });
+  const policy = policyStore.getPolicy();
+  const anomaly = await anomalyEngine.processActivity(event, {
+    amount_usd: input.amount_usd,
+    ip_address: input.ip_address as string | undefined,
+    device_id: input.device_id as string | undefined,
+    contract_address: input.contract_address as string | undefined,
+  }, policy);
+  bridge.broadcastEvent(event);
+  logger.broadcastEvent(event);
+  if (anomaly.anomaly_event) {
+    bridge.broadcastEvent(anomaly.anomaly_event);
+    logger.broadcastEvent(anomaly.anomaly_event);
+  }
+
+  const simulation = await chainAdapter.simulateSignedTransaction(transactionBase64);
+  intent = recordSimulation(intent.id, { status: simulation.err === null ? 'passed' : 'failed', details: simulation });
+  if (simulation.err !== null) {
+    auditAnchor.record('guarded_transaction_blocked', {
+      intent_id: intent.id, reason: 'Solana simulation failed', simulation_error: simulation.err, actor_id: identity.id,
+    });
+    bridge.broadcastEvent({
+      type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+      agent_id: intent.agent_id, action: 'Transaction blocked by Solana simulation', resource: intent.id,
+      status: 'failure', details: { simulation_error: simulation.err },
+    });
+    return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'simulation_failed' };
+  }
+
+  const budgetExceeded = input.amount_usd > policy.max_auto_trade_usd;
+  // Amounts and instruction semantics are supplied by the caller and are not yet
+  // independently decoded/valued, so every submitted devnet transaction requires
+  // explicit human approval even when the anomaly model reports a quiet pass.
+  const requiresHuman = true;
+  if (requiresHuman) {
+    const request: HITLRequestEvent = {
+      type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
+      request_id: `req_${crypto.randomUUID()}`, agent_id: intent.agent_id,
+      incident_type: budgetExceeded ? 'budget_overrun' : anomaly.evaluation.action,
+      context: {
+        intent_id: intent.id, chain: intent.network, action: intent.action, amount_usd: input.amount_usd,
+        max_auto_trade_usd: policy.max_auto_trade_usd,
+        declared_amount_is_independently_verified: false,
+        budget_exceeded: budgetExceeded, anomaly: anomaly.evaluation,
+        simulation: { err: simulation.err, logs: simulation.logs, units_consumed: simulation.unitsConsumed },
+      },
+      action_options: ['allow_once', 'allow_session', 'deny_terminate'],
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    };
+    bridge.broadcastEvent(request);
+    logger.broadcastEvent(request);
+    let decision;
+    try {
+      decision = await hitlHandler.handleRequest(request, false);
+    } catch (error) {
+      intent = transitionTransactionIntent(intent.id, 'rejected');
+      return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'human_approval_unavailable', error: String(error) };
+    }
+    if (decision.action === 'deny_terminate') {
+      intent = transitionTransactionIntent(intent.id, 'rejected');
+      auditAnchor.record('guarded_transaction_rejected', { intent_id: intent.id, actor_id: identity.id, reason: decision.reason });
+      return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'human_rejected' };
+    }
+    intent = transitionTransactionIntent(intent.id, 'approved');
+    auditAnchor.record('guarded_transaction_approved', { intent_id: intent.id, actor_id: decision.actor_id ?? 'unknown-operator', decision: decision.action });
+  } else {
+    intent = transitionTransactionIntent(intent.id, 'approved');
+  }
+
+  intent = transitionTransactionIntent(intent.id, 'authorized');
+  try {
+    const signature = await chainAdapter.sendSignedTransaction(transactionBase64);
+    intent = transitionTransactionIntent(intent.id, 'submitted');
+    auditAnchor.record('guarded_transaction_submitted', { intent_id: intent.id, signature, network: intent.network });
+    bridge.broadcastEvent({
+      type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+      agent_id: intent.agent_id, action: 'Guarded Solana transaction submitted', resource: intent.id,
+      status: 'success', details: { signature, network: intent.network },
+    });
+    return { intent, submitted: true, signature, simulation, anomaly: anomaly.evaluation };
+  } catch (error) {
+    intent = transitionTransactionIntent(intent.id, 'failed');
+    auditAnchor.record('guarded_transaction_submission_failed', { intent_id: intent.id, error: String(error) });
+    throw error;
+  }
+}
+
+app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res: Response) => {
+  handleMcpRequest(req, res, {
+    getStatus: async () => ({
+      runtime: runtimeName,
+      daemon_connected: runtimeBridge.isConnected(),
+      chain: await chainAdapter.health(),
+    }),
+    getPolicy: () => policyStore.getPolicy(),
+    reportActivity: reportMcpActivity,
+    reportViolation: reportMcpViolation,
+    guardAndSendSolana,
+    getTransactionStatus: getTransactionIntent,
+  });
+});
 
 // AgentSphere wallet authentication. Challenge responses are single-use and fail closed.
 app.post('/api/auth/challenge', (req: Request, res: Response) => {
@@ -159,13 +400,15 @@ app.get('/api/transactions/:id', apiAuthenticator.requireAnyRole('admin', 'opera
 app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
+    const chain = await chainAdapter.health();
     const response: HealthCheckResponse & {
       runtimeConfig: typeof runtimeConfig;
       capsule: typeof capsuleConfig;
       providers: ReturnType<typeof providerRegistry.list>;
       unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
+      chain: Awaited<ReturnType<typeof chainAdapter.health>>;
     } = {
-      status: 'ok',
+      status: chain.healthy ? 'ok' : 'degraded',
       daemon_connected: runtimeBridge.isConnected(),
       timestamp: new Date().toISOString(),
       version: '1.0.0',
@@ -175,6 +418,7 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       capsule: capsuleConfig,
       providers: providerRegistry.list(),
       unicity: blueprint,
+      chain,
     };
     res.json(response);
   } catch (error) {
@@ -521,6 +765,7 @@ app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runt
 app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
+    const chain = await chainAdapter.health();
     res.json({
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
@@ -528,6 +773,7 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       capsule: capsuleConfig,
       providers: providerRegistry.list(),
       unicity: blueprint,
+      chain,
     });
   } catch (error) {
     logger.error('[Server] Error building Unicity blueprint for stats:', { error: String(error) });
@@ -537,6 +783,7 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       uptime_ms: process.uptime() * 1000,
       capsule: capsuleConfig,
       providers: providerRegistry.list(),
+      chain: await chainAdapter.health(),
       error: String(error),
     });
   }
@@ -668,6 +915,33 @@ const shutdown = () => {
     process.exit(0);
   });
 };
+
+// Human approval decisions can be made by an authenticated dashboard operator.
+app.get('/api/hitl/pending', apiAuthenticator.requireAnyRole('admin', 'operator'), (_req: Request, res: Response) => {
+  res.json({ success: true, requests: [...hitlHandler.getPendingRequests().values()].map(({ event }) => event) });
+});
+
+app.post('/api/hitl/:request_id/respond', apiAuthenticator.requireAnyRole('admin', 'operator'), (req: Request, res: Response) => {
+  const { action, reason } = req.body as { action?: string; reason?: string };
+  if (action !== 'allow_once' && action !== 'allow_session' && action !== 'deny_terminate') {
+    res.status(400).json({ success: false, error: 'Invalid HITL action.' });
+    return;
+  }
+  const decision = hitlHandler.respond({ request_id: req.params.request_id, action, reason: reason || 'Dashboard operator decision', actor_id: req.asguardIdentity?.id });
+  if (!decision) {
+    res.status(404).json({ success: false, error: 'Approval request is no longer pending.' });
+    return;
+  }
+  auditAnchor.record('hitl_decision', {
+    request_id: req.params.request_id, action, actor_id: req.asguardIdentity?.id, runtime: runtimeName,
+  });
+  bridge.broadcastEvent({
+    type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: decision.agent_id, action: 'HITL Decision Applied', resource: req.params.request_id,
+    status: action === 'deny_terminate' ? 'failure' : 'success', details: { action, actor_id: req.asguardIdentity?.id, reason },
+  });
+  res.json({ success: true, decision });
+});
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

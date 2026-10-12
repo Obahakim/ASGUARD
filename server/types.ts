@@ -118,6 +118,7 @@ export interface HITLResponse extends Record<string, unknown> {
 	request_id: string;
 	action: 'allow_once' | 'allow_session' | 'deny_terminate';
 	reason?: string;
+  actor_id?: string;
 }
 
 export interface PolicyUpdateRequest {
