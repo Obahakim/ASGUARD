@@ -1,71 +1,205 @@
-{
-  "name": "asguard",
-  "version": "0.1.0",
-  "private": true,
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "scripts": {
-    "build": "next build",
-    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch server/index.ts\"",
-    "dev:frontend": "next dev",
-    "dev:backend": "node --env-file=.env --import tsx --watch server/index.ts",
-    "lint": "eslint",
-    "start": "next start",
-    "backend:start": "node dist/server/index.js",
-    "demo:trader": "node --env-file=.env --import tsx scripts/demo-trader.ts",
-    "build:capsule": "cd capsule && cargo build --release",
-    "install:local": "./install.sh",
-    "daemon:start": "./scripts/asguard.sh start",
-    "daemon:status": "./scripts/asguard.sh status",
-    "daemon:logs": "./scripts/asguard.sh logs",
-    "daemon:policy": "./scripts/asguard.sh policy",
-    "daemon:audit": "./scripts/asguard.sh audit",
-    "daemon:uninstall": "./scripts/asguard.sh uninstall"
-  },
-  "bin": {
-    "asguard": "./scripts/asguard.sh"
-  },
-  "dependencies": {
-    "@emotion/is-prop-valid": "latest",
-    "@types/topojson-client": "^3.1.5",
-    "@unicitylabs/sphere-sdk": "0.17.7",
-    "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
-    "d3-geo": "^3.1.1",
-    "drizzle-orm": "^0.45.2",
-    "express": "^4.18.2",
-    "framer-motion": "^12.23.25",
-    "jiti": "latest",
-    "lucide-react": "0.555.0",
-    "next": "16.0.6",
-    "pg": "^8.23.0",
-    "prop-types": "latest",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "tailwind-merge": "3.4.0",
-    "tailwindcss-animate": "1.0.7",
-    "topojson-client": "^3.1.0",
-    "ws": "^8.14.2"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/d3-geo": "^3.1.0",
-    "@types/express": "^4.17.21",
-    "@types/node": "^20",
-    "@types/pg": "^8.23.1",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@types/ws": "^8.5.8",
-    "concurrently": "^8.2.2",
-    "eslint": "^9",
-    "eslint-config-next": "16.0.6",
-    "postcss": "8.5.6",
-    "tailwindcss": "^4",
-    "tsx": "^4.7.0",
-    "typescript": "^5"
+import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
+import type { ApprovalAttestation, SignApprovalRequest } from './types';
+
+export const DEFAULT_APPROVAL_TTL_MS = Number(process.env.ASGUARD_APPROVAL_TTL_MS || 120000);
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortObject(value));
+}
+
+function sortObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObject);
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of entries) result[k] = sortObject(v);
+    return result;
+  }
+  return value;
+}
+
+export function getApprovalSigningKey(value = process.env.ASGUARD_AUDIT_KEY || process.env.ASGUARD_APPROVAL_KEY): string {
+  const signingKey = value?.trim();
+  if (!signingKey) throw new Error('ASGUARD_AUDIT_KEY or ASGUARD_APPROVAL_KEY must be configured before signing approvals.');
+  if (Buffer.byteLength(signingKey, 'utf8') < 32) throw new Error('Approval signing key must contain at least 32 bytes.');
+  return signingKey;
+}
+
+export function buildApprovalPayload(params: {
+  decision_id: string;
+  intent_id: string;
+  agent_id: string;
+  payload_hash: string;
+  action: 'approve_once' | 'approve_session';
+  max_amount_usd?: number;
+  expires_at: string;
+  anomaly_score: number;
+  rules_triggered: Array<{ rule_id: string; severity: string; score_contribution: number; details?: Record<string, unknown> }>;
+  issued_at: string;
+  policy_version?: string;
+}) {
+  return {
+    decision_id: params.decision_id,
+    intent_id: params.intent_id,
+    agent_id: params.agent_id,
+    payload_hash: params.payload_hash,
+    action: params.action,
+    max_amount_usd: params.max_amount_usd,
+    expires_at: params.expires_at,
+    anomaly_score: params.anomaly_score,
+    rules_triggered: params.rules_triggered,
+    issued_at: params.issued_at,
+    policy_version: params.policy_version,
+  };
+}
+
+export function signApprovalPayload(payload: Record<string, unknown>, secret: string): string {
+  return createHmac('sha256', secret).update(canonicalJson(payload)).digest('hex');
+}
+
+export function issueApprovalAttestation(input: {
+  decision_id: string;
+  intent_id: string;
+  agent_id: string;
+  payload_hash: string;
+  action: 'approve_once' | 'approve_session';
+  max_amount_usd?: number;
+  expires_at: string;
+  anomaly_score: number;
+  rules_triggered: Array<{ rule_id: string; severity: string; score_contribution: number; details?: Record<string, unknown> }>;
+  issued_at: string;
+  policy_version?: string;
+  secret?: string;
+}): ApprovalAttestation {
+  const secret = input.secret ?? getApprovalSigningKey();
+  const payload = buildApprovalPayload({
+    decision_id: input.decision_id,
+    intent_id: input.intent_id,
+    agent_id: input.agent_id,
+    payload_hash: input.payload_hash,
+    action: input.action,
+    max_amount_usd: input.max_amount_usd,
+    expires_at: input.expires_at,
+    anomaly_score: input.anomaly_score,
+    rules_triggered: input.rules_triggered,
+    issued_at: input.issued_at,
+    policy_version: input.policy_version,
+  });
+
+  return {
+    ...payload,
+    signature: signApprovalPayload(payload, secret),
+  };
+}
+
+export function verifyApprovalAttestation(
+  attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
+  opts?: {
+    signingKey?: string;
+    bytesToSign?: Uint8Array | string;
+    expectedAgentId?: string;
+    expectedPayloadHash?: string;
+    maxAmountUsd?: number;
+    now?: Date;
+  }
+): { valid: boolean; reason?: string } {
+  const signingKey = (opts?.signingKey ?? getApprovalSigningKey()).trim();
+  const now = opts?.now ?? new Date();
+  const payload = buildApprovalPayload({
+    decision_id: attestation.decision_id,
+    intent_id: attestation.intent_id,
+    agent_id: attestation.agent_id,
+    payload_hash: attestation.payload_hash,
+    action: attestation.action,
+    max_amount_usd: attestation.max_amount_usd,
+    expires_at: attestation.expires_at,
+    anomaly_score: attestation.anomaly_score,
+    rules_triggered: attestation.rules_triggered,
+    issued_at: attestation.issued_at,
+    policy_version: attestation.policy_version,
+  });
+
+  const expectedSignature = signApprovalPayload(payload, signingKey);
+  if (!timingSafeEqual(Buffer.from(attestation.signature, 'hex'), Buffer.from(expectedSignature, 'hex'))) {
+    return { valid: false, reason: 'signature_mismatch' };
+  }
+
+  if (new Date(attestation.expires_at).getTime() <= now.getTime()) {
+    return { valid: false, reason: 'expired' };
+  }
+
+  if (opts?.expectedAgentId && opts.expectedAgentId !== attestation.agent_id) {
+    return { valid: false, reason: 'agent_id_mismatch' };
+  }
+
+  if (opts?.expectedPayloadHash && opts.expectedPayloadHash !== attestation.payload_hash) {
+    return { valid: false, reason: 'payload_hash_mismatch' };
+  }
+
+  if (typeof opts?.bytesToSign !== 'undefined') {
+    const actualHash = createHash('sha256')
+      .update(typeof opts.bytesToSign === 'string' ? opts.bytesToSign : Buffer.from(opts.bytesToSign))
+      .digest('hex');
+    if (actualHash !== attestation.payload_hash) {
+      return { valid: false, reason: 'bytes_to_sign_hash_mismatch' };
+    }
+  }
+
+  if (typeof opts?.maxAmountUsd === 'number' && typeof attestation.max_amount_usd === 'number' && opts.maxAmountUsd > attestation.max_amount_usd) {
+    return { valid: false, reason: 'amount_exceeds_attestation_limit' };
+  }
+
+  return { valid: true };
+}
+
+export function assertApprovedThenSign(
+  bytesToSign: Uint8Array | string,
+  attestation: ApprovalAttestation,
+  publicVerifyParams: {
+    signingKey?: string;
+    expectedAgentId?: string;
+    expectedPayloadHash?: string;
+    maxAmountUsd?: number;
+    now?: Date;
+  } = {}
+): true {
+  const verification = verifyApprovalAttestation(attestation, {
+    signingKey: publicVerifyParams.signingKey,
+    bytesToSign,
+    expectedAgentId: publicVerifyParams.expectedAgentId,
+    expectedPayloadHash: publicVerifyParams.expectedPayloadHash,
+    maxAmountUsd: publicVerifyParams.maxAmountUsd,
+    now: publicVerifyParams.now,
+  });
+  if (!verification.valid) throw new Error(`ASGUARD attestation rejected: ${verification.reason ?? 'invalid'}`);
+  return true;
+}
+
+export function validateApprovalRequest(input: Partial<SignApprovalRequest>): void {
+  if (!input.agent_id || !input.agent_name || !input.action || !input.payload_hash || !input.network || !input.idempotency_key) {
+    throw new Error('agent_id, agent_name, action, payload_hash, network, and idempotency_key are required.');
+  }
+  if (!['low', 'medium', 'high'].includes(String(input.risk_level ?? ''))) {
+    throw new Error('risk_level must be low, medium, or high.');
+  }
+  if (input.amount_usd !== undefined && (!Number.isFinite(input.amount_usd) || input.amount_usd < 0)) {
+    throw new Error('amount_usd must be a non-negative finite number.');
+  }
+  if (!/^[A-Fa-f0-9]{64}$/.test(String(input.payload_hash))) {
+    throw new Error('payload_hash must be a SHA-256 hexadecimal string.');
+  }
+  if (String(input.idempotency_key).length < 8) {
+    throw new Error('idempotency_key must be at least 8 characters.');
   }
 }
 
-
-"}]} server/approvalAttestation.ts, server/notifier.ts. Need new files separate call. Let's create new files now. Also patch index.ts and maybe more. We'll do later. We need ensure valid JSON to push_files. above JSON includes patch strings but maybe too large but okay. Let's do new file creation separate. Need add valid JSON content. Let's proceed with new files. Also note we must not forget `approvalAttestation.ts`/`notifier.ts` because patch earlier was not written for those. We can create new files after. Let's do as one call. Default branch main is okay. This is not create branch. Good. Let's do new files. Need include proper `owner` etc? push_files requires owner+repo. We used only branch maybe accepted? The earlier `push_files` in instructions says branch and repo/owner required. I forgot. Need include owner+repo. Let's do correct. We also need maybe not use main if branch exists? It's okay from repo default branch. Use branch 
+export default {
+  DEFAULT_APPROVAL_TTL_MS,
+  getApprovalSigningKey,
+  buildApprovalPayload,
+  signApprovalPayload,
+  issueApprovalAttestation,
+  verifyApprovalAttestation,
+  assertApprovedThenSign,
+  validateApprovalRequest,
+};
