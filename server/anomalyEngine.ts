@@ -39,11 +39,10 @@ export class AnomalyEngine {
   }> {
     logger.debug(`[AnomalyEngine] Processing activity from ${activity.agent_id}: ${activity.action}`);
 
-    // Step 1: Update agent profile with this activity
-    this.profileManager.updateProfile(activity, metadata);
-
-    // Step 2: Run anomaly evaluation
+    // Evaluate against the previously observed profile, then record this activity.
+    // This keeps new IP/device checks from learning the value before checking it.
     const evaluation = await this.evaluator.evaluate(activity, metadata, policy);
+    this.profileManager.updateProfile(activity, metadata);
 
     // Step 3: Add to audit chain
     const auditEntry = this.auditChain.addEntry(

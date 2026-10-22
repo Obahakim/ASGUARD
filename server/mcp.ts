@@ -11,6 +11,7 @@ export interface McpServices {
   guardAndSendSolana(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   requestSignApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   getTransactionStatus(id: string): unknown;
+  getApprovalStatus(id: string): unknown;
 }
 
 type McpRequest = { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
@@ -40,6 +41,7 @@ const tools = [
         risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
         payload_hash: { type: 'string', minLength: 1, maxLength: 256 },
         network: { type: 'string', minLength: 1, maxLength: 128 },
+        chain: { type: 'string', minLength: 1, maxLength: 64 },
         amount_usd: { type: 'number', minimum: 0 },
         ip_address: { type: 'string' },
         device_id: { type: 'string' },
@@ -51,6 +53,11 @@ const tools = [
       },
       additionalProperties: false,
     },
+  },
+  {
+    name: 'asguard_get_approval_status',
+    description: 'Check whether a pending sign approval has been approved or rejected, and retrieve its attestation after human approval.',
+    inputSchema: { type: 'object', required: ['request_id'], properties: { request_id: { type: 'string', minLength: 1, maxLength: 128 } }, additionalProperties: false },
   },
   {
     name: 'asguard_get_transaction_status',
@@ -69,6 +76,8 @@ const tools = [
         action: { type: 'string', minLength: 1, maxLength: 512 },
         risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
         details: { type: 'object' },
+        chain: { type: 'string' },
+        network: { type: 'string' },
         amount_usd: { type: 'number', minimum: 0 },
         ip_address: { type: 'string' },
         device_id: { type: 'string' },
@@ -181,6 +190,13 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
             return;
           }
           value = services.getTransactionStatus(transactionId) ?? { found: false };
+        } else if (name === 'asguard_get_approval_status') {
+          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin', 'operator', 'auditor'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to read approval status.'));
+            return;
+          }
+          if (typeof args.request_id !== 'string') { res.status(400).json(errorResponse(id, -32602, 'request_id is required.')); return; }
+          value = services.getApprovalStatus(args.request_id) ?? { found: false };
         } else if (name === 'asguard_report_activity') {
           if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
             res.status(403).json(errorResponse(id, -32003, 'Insufficient role to report runtime activity.'));

@@ -32,6 +32,8 @@ export interface AgentActivityEvent extends BaseEvent {
 	action: string;
 	risk_level: 'low' | 'medium' | 'high';
 	details: Record<string, unknown>;
+	chain?: string;
+	network?: string;
 }
 
 export interface CapabilityCheckEvent extends BaseEvent {
@@ -150,6 +152,8 @@ export interface AnomalyProfile {
 	first_seen: Date;
 	last_updated: Date;
 	observation_count: number;
+	event_history?: Array<{ timestamp: number; amount_usd: number }>;
+	known_chains?: Set<string>;
 }
 
 export interface EvaluationResult {
@@ -159,6 +163,7 @@ export interface EvaluationResult {
 	action: 'silent_pass' | 'warn' | 'halt_and_hitl';
 	confidence: number;
 	timestamp: string;
+	hard_blocked?: boolean;
 }
 
 export interface RuleViolation {
@@ -195,6 +200,7 @@ export type TransactionIntentStatus =
 	| 'awaiting_approval'
 	| 'approved'
 	| 'rejected'
+	| 'pending_hitl'
 	| 'authorized'
 	| 'submitted'
 	| 'confirmed'
@@ -214,6 +220,7 @@ export interface TransactionIntent {
 	agent_id: string;
 	wallet_id: string;
 	network: string;
+	chain?: string;
 	action: string;
 	resource: string;
 	payload_hash: string;
@@ -225,6 +232,32 @@ export interface TransactionIntent {
 	created_at: string;
 	updated_at: string;
 }
+
+export interface ApprovalAttestation {
+	decision_id: string; intent_id: string; agent_id: string; payload_hash: string;
+	network: string; chain?: string; action: 'approve_once' | 'approve_session';
+	max_amount_usd?: number; expires_at: string; anomaly_score: number;
+	rules_triggered: Array<{ rule_id: string; severity: string; score_contribution: number; details?: Record<string, unknown> }>;
+	issued_at: string; policy_version?: string; signature: string;
+}
+export interface SignApprovalRequest {
+	agent_id: string; agent_name: string; action: string; risk_level: 'low' | 'medium' | 'high';
+	payload_hash: string; network: string; chain?: string; amount_usd?: number; ip_address?: string;
+	device_id?: string; contract_address?: string; wallet_id?: string; idempotency_key: string;
+	details?: Record<string, unknown>; simulation?: Record<string, unknown>;
+}
+export interface SignApprovalResponse {
+	status: 'approved' | 'pending_hitl' | 'rejected'; decision_id?: string; intent_id?: string;
+	attestation?: ApprovalAttestation; reason?: string; anomaly?: EvaluationResult; request_id?: string;
+}
+export interface NotifierAlert {
+	agent_id: string; score: number; action: string; amount_usd?: number; request_id: string;
+	status: string; expires_at: string; rules: Array<{ rule_id: string; score_contribution: number; details?: Record<string, unknown> }>;
+	badge: string;
+	top_rules?: string[];
+	requires_hitl?: boolean;
+}
+export type ApprovalDecisionAction = 'approve_once' | 'approve_session' | 'deny_terminate';
 
 export interface AgentSphereOperator {
 	wallet_address: string;

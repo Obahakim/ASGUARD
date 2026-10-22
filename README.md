@@ -62,6 +62,8 @@ A valid approval returns a short-lived attestation signed with the ASGUARD audit
 
 The helper `assertApprovedThenSign` is the host-side reference verifier.
 
+Approval requests identify their target with `network` (for example `solana:devnet`) or with separate `chain` and `network` fields. Attestations bind both values. The ChainRegistry resolves exact chain/network adapters, then chain defaults and the configured default; unknown chains use an approval-only adapter and cannot simulate or submit.
+
 ## Environment variables
 
 Required or recommended:
@@ -70,6 +72,7 @@ Required or recommended:
 - ASGUARD_APPROVAL_TTL_MS: approval expiry in milliseconds; default 120000
 - ASGUARD_PORT / ASGUARD_HOST
 - ASGUARD_ALLOWED_ORIGINS
+- ASGUARD_DEFAULT_CHAIN (optional ChainRegistry default adapter id)
 - TELEGRAM_WEBHOOK_URL / SLACK_WEBHOOK_URL / DISCORD_WEBHOOK_URL / ASGUARD_GENERIC_WEBHOOK_URL
 
 ## Quickstart
@@ -82,10 +85,10 @@ Required or recommended:
 
 ## Threat badge legend and notifications
 
-- LOW (0-39): dashboard digest only
-- ELEVATED (40-69): Telegram/Slack/webhook notification with dedupe
-- HIGH (70-89): push + channel notification; action required
-- CRITICAL (90-100): multi-channel repeated notifications until resolved or expired
+- LOW (0-39): no external notification
+- ELEVATED (40-69): dashboard only
+- HIGH (70-89): HITL required; external notification when configured
+- CRITICAL (90-100): HITL required; external notification when configured
 
 Timeouts default to deny. High-risk requests without human resolution remain blocked.
 

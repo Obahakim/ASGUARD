@@ -29,6 +29,8 @@ export function buildApprovalPayload(params: {
   decision_id: string;
   intent_id: string;
   agent_id: string;
+  network: string;
+  chain?: string;
   payload_hash: string;
   action: 'approve_once' | 'approve_session';
   max_amount_usd?: number;
@@ -42,6 +44,8 @@ export function buildApprovalPayload(params: {
     decision_id: params.decision_id,
     intent_id: params.intent_id,
     agent_id: params.agent_id,
+    network: params.network,
+    chain: params.chain,
     payload_hash: params.payload_hash,
     action: params.action,
     max_amount_usd: params.max_amount_usd,
@@ -61,6 +65,8 @@ export function issueApprovalAttestation(input: {
   decision_id: string;
   intent_id: string;
   agent_id: string;
+  network: string;
+  chain?: string;
   payload_hash: string;
   action: 'approve_once' | 'approve_session';
   max_amount_usd?: number;
@@ -76,6 +82,8 @@ export function issueApprovalAttestation(input: {
     decision_id: input.decision_id,
     intent_id: input.intent_id,
     agent_id: input.agent_id,
+    network: input.network,
+    chain: input.chain,
     payload_hash: input.payload_hash,
     action: input.action,
     max_amount_usd: input.max_amount_usd,
@@ -93,7 +101,7 @@ export function issueApprovalAttestation(input: {
 }
 
 export function verifyApprovalAttestation(
-  attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
+  attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'network' | 'chain' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
   opts?: {
     signingKey?: string;
     bytesToSign?: Uint8Array | string;
@@ -109,6 +117,8 @@ export function verifyApprovalAttestation(
     decision_id: attestation.decision_id,
     intent_id: attestation.intent_id,
     agent_id: attestation.agent_id,
+    network: attestation.network,
+    chain: attestation.chain,
     payload_hash: attestation.payload_hash,
     action: attestation.action,
     max_amount_usd: attestation.max_amount_usd,
@@ -176,7 +186,7 @@ export function assertApprovedThenSign(
 }
 
 export function validateApprovalRequest(input: Partial<SignApprovalRequest>): void {
-  if (!input.agent_id || !input.agent_name || !input.action || !input.payload_hash || !input.network || !input.idempotency_key) {
+  if ([input.agent_id, input.agent_name, input.action, input.payload_hash, input.network, input.idempotency_key].some(value => typeof value !== 'string' || !value.trim())) {
     throw new Error('agent_id, agent_name, action, payload_hash, network, and idempotency_key are required.');
   }
   if (!['low', 'medium', 'high'].includes(String(input.risk_level ?? ''))) {
@@ -188,8 +198,11 @@ export function validateApprovalRequest(input: Partial<SignApprovalRequest>): vo
   if (!/^[A-Fa-f0-9]{64}$/.test(String(input.payload_hash))) {
     throw new Error('payload_hash must be a SHA-256 hexadecimal string.');
   }
-  if (String(input.idempotency_key).length < 8) {
-    throw new Error('idempotency_key must be at least 8 characters.');
+  if (input.chain && input.network?.includes(':') && input.chain.toLowerCase() !== input.network.split(':', 1)[0].toLowerCase()) {
+    throw new Error('chain does not match the namespace in network.');
+  }
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(input.idempotency_key!)) {
+    throw new Error('idempotency_key must be 8-128 characters using letters, numbers, dot, underscore, colon, or dash.');
   }
 }
 

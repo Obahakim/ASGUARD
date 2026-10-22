@@ -50,11 +50,12 @@ export class Notifier {
 
   async send(alert: NotifierAlert): Promise<{ sent: boolean; channelCount: number }> {
     const severity = computeSeverity(alert.score);
-    if (severity === 'LOW' && alert.score < 40) {
+    if ((alert.score < 70 && !alert.requires_hitl) || alert.status !== 'pending_hitl') {
       return { sent: false, channelCount: 0 };
     }
 
     const channels = this.getConfiguredWebhooks();
+    if (channels.length === 0) return { sent: false, channelCount: 0 };
     if (!this.shouldSend(alert)) {
       return { sent: false, channelCount: 0 };
     }
@@ -68,6 +69,7 @@ export class Notifier {
         `status: ${alert.status}`,
         `expires_at: ${alert.expires_at}`,
         `request_id: ${alert.request_id}`,
+        `top_rules: ${(alert.top_rules ?? alert.rules.slice(0, 3).map(rule => rule.rule_id)).join(', ') || 'none'}`,
         '',
         ...alert.rules.slice(0, 3).map((rule) => `rule: ${rule.rule_id} (${rule.score_contribution})`),
       ].filter(Boolean).join('\n'),
@@ -101,7 +103,7 @@ export class Notifier {
         // swallow webhook errors and fail closed by continuing to other channels
       }
     }
-    return { sent: channelCount > 0 || channels.length === 0, channelCount };
+    return { sent: channelCount > 0, channelCount };
   }
 
   async notifyForDecision(payload: {
@@ -113,6 +115,7 @@ export class Notifier {
     expires_at: string;
     score: number;
     rules: Array<{ rule_id: string; score_contribution: number; details?: Record<string, unknown> }>;
+    requires_hitl?: boolean;
   }): Promise<{ sent: boolean; channelCount: number }> {
     return this.send({
       agent_id: payload.agent_id,
@@ -124,6 +127,7 @@ export class Notifier {
       expires_at: payload.expires_at,
       rules: payload.rules,
       badge: buildAlertBadge(payload.score),
+      requires_hitl: payload.requires_hitl,
     });
   }
 

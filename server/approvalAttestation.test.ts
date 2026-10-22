@@ -8,6 +8,7 @@ test('approval attestation round-trips and verifies', () => {
     decision_id: 'dec_1',
     intent_id: 'intent_1',
     agent_id: 'agent_a',
+    network: 'solana:devnet',
     payload_hash: 'a'.repeat(64),
     action: 'approve_once',
     max_amount_usd: 250,
@@ -32,6 +33,7 @@ test('approval attestation round-trips and verifies', () => {
     decision_id: 'dec_2',
     intent_id: 'intent_2',
     agent_id: 'agent_b',
+    network: 'ethereum:mainnet',
     payload_hash: 'b'.repeat(64),
     action: 'approve_once',
     expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -50,7 +52,7 @@ test('approval attestation round-trips and verifies', () => {
   assert.equal(valid.valid, true);
 
   assert.throws(() => {
-    assertApprovedThenSign('hello'), matching, { signingKey: 'another-long-enough-key-value-here-123456', expectedAgentId: 'agent_b', expectedPayloadHash: 'b'.repeat(64) };
+    assertApprovedThenSign('hello', matching, { signingKey: 'another-long-enough-key-value-here-123456', expectedAgentId: 'agent_b', expectedPayloadHash: 'b'.repeat(64) });
   }, /ASGUARD attestation rejected/i);
 });
 
@@ -59,6 +61,7 @@ test('expired approval is rejected', () => {
     decision_id: 'dec_3',
     intent_id: 'intent_3',
     agent_id: 'agent_c',
+    network: 'solana:devnet',
     payload_hash: 'c'.repeat(64),
     action: 'approve_session',
     expires_at: new Date(Date.now() - 1000).toISOString(),

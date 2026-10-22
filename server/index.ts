@@ -30,7 +30,10 @@ import { UnicityAdapter } from './aos/unicityAdapter';
 import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
 import { createTransactionIntent, getTransactionIntent, listTransactionIntents, recordSimulation, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
-import { chainAdapter } from './aos/chainAdapter';
+import type { ChainAdapter } from './aos/chainAdapter';
+import { chainRegistry } from './aos/chainRegistry';
+import { getApprovalResult, requestSignApproval as processSignApproval } from './approvals';
+import { notifier } from './notifier';
 import { handleMcpRequest } from './mcp';
 
 // Configuration
@@ -50,6 +53,7 @@ const capabilityManager = new CapabilityManager(defaultCapabilities);
 capabilityManager.grant('audit_anchoring');
 runtimeBridge.connect();
 const unicityAdapter = new UnicityAdapter();
+const chainAdapter = chainRegistry.resolve('solana', 'devnet') as ChainAdapter;
 
 // Initialize Express app
 const app = express();
@@ -104,6 +108,8 @@ async function reportMcpActivity(input: Record<string, unknown>, identity: NonNu
     type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
     agent_id: agentId, agent_name: input.agent_name as string, action: input.action as string,
     risk_level: input.risk_level as AgentActivityEvent['risk_level'],
+    chain: typeof input.chain === 'string' ? input.chain : undefined,
+    network: typeof input.network === 'string' ? input.network : undefined,
     details: input.details && typeof input.details === 'object' && !Array.isArray(input.details)
       ? input.details as Record<string, unknown> : {},
   };
@@ -134,6 +140,7 @@ async function reportMcpActivity(input: Record<string, unknown>, identity: NonNu
     };
     bridge.broadcastEvent(hitlEvent);
     logger.broadcastEvent(hitlEvent);
+    void notifier.notifyForDecision({ agent_id: agentId, action: event.action, amount_usd: metadata.amount_usd, request_id: hitlEvent.request_id, status: 'pending_hitl', expires_at: hitlEvent.expires_at, score: result.evaluation.anomaly_score, rules: result.evaluation.rules_triggered, requires_hitl: true }).catch(error => logger.error('[MCP] Notifier failed', { error: String(error) }));
     void hitlHandler.handleRequest(hitlEvent).then((decision) => {
       bridge.broadcastEvent({
         type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
@@ -175,6 +182,7 @@ async function reportMcpViolation(input: Record<string, unknown>, identity: NonN
   };
   bridge.broadcastEvent(request);
   logger.broadcastEvent(request);
+  void notifier.notifyForDecision({ agent_id: event.agent_id, action: event.violation_type, request_id: request.request_id, status: 'pending_hitl', expires_at: request.expires_at, score: event.severity === 'critical' ? 95 : event.severity === 'high' ? 70 : event.severity === 'medium' ? 50 : 20, rules: [], requires_hitl: true }).catch(error => logger.error('[MCP] Notifier failed', { error: String(error) }));
   const decision = await hitlHandler.handleRequest(request, false);
   auditAnchor.record('mcp_agent_intervention_decision', {
     request_id: request.request_id, agent_id: event.agent_id, action: decision.action,
@@ -202,6 +210,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
     agent_id: input.agent_id as string,
     wallet_id: input.wallet_id as string,
     network: `${chainAdapter.chain}:${chainAdapter.network}`,
+    chain: chainAdapter.chain,
     action: input.action as string,
     resource: typeof input.contract_address === 'string' ? input.contract_address : 'solana-transaction',
     payload_hash: payloadHash,
@@ -219,7 +228,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
   const event: AgentActivityEvent = {
     type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
     agent_id: intent.agent_id, agent_name: input.agent_name as string, action: intent.action,
-    risk_level: input.risk_level as AgentActivityEvent['risk_level'], details: { chain: intent.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
+    risk_level: input.risk_level as AgentActivityEvent['risk_level'], chain: intent.chain, network: chainAdapter.network, details: { chain: intent.chain, network: chainAdapter.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
   };
   auditAnchor.record('guarded_transaction_requested', {
     intent_id: intent.id, agent_id: intent.agent_id, wallet_id: intent.wallet_id,
@@ -275,6 +284,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
     };
     bridge.broadcastEvent(request);
     logger.broadcastEvent(request);
+    void notifier.notifyForDecision({ agent_id: intent.agent_id, action: intent.action, amount_usd: input.amount_usd as number, request_id: request.request_id, status: 'pending_hitl', expires_at: request.expires_at, score: anomaly.evaluation.anomaly_score, rules: anomaly.evaluation.rules_triggered, requires_hitl: true }).catch(error => logger.error('[MCP] Notifier failed', { error: String(error) }));
     let decision;
     try {
       decision = await hitlHandler.handleRequest(request, false);
@@ -321,9 +331,27 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     getPolicy: () => policyStore.getPolicy(),
     reportActivity: reportMcpActivity,
     reportViolation: reportMcpViolation,
+    requestSignApproval: async (input, identity) => ({ ...await processSignApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     guardAndSendSolana,
     getTransactionStatus: getTransactionIntent,
+    getApprovalStatus: getApprovalResult,
   });
+});
+
+app.post('/api/approvals/sign-request', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ status:'rejected', reason:'authentication_required' }); return; }
+    const response = await processSignApproval(req.body as Record<string, unknown>, req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
+    res.status(response.status === 'rejected' ? 403 : 200).json(response);
+  } catch (error) {
+    res.status(400).json({ status:'rejected', reason:error instanceof Error ? error.message : 'invalid_request' });
+  }
+});
+
+app.get('/api/approvals/:request_id', apiAuthenticator.requireAnyRole('runtime', 'admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  const status = getApprovalResult(req.params.request_id);
+  if (!status) { res.status(404).json({ status:'not_found', request_id:req.params.request_id }); return; }
+  res.json(status);
 });
 
 // AgentSphere wallet authentication. Challenge responses are single-use and fail closed.
@@ -563,6 +591,8 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       ip_address,
       device_id,
       contract_address,
+      chain,
+      network,
     } = req.body;
 
     if (!capabilityManager.can('event_monitoring')) {
@@ -581,6 +611,8 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       agent_name,
       action,
       risk_level,
+      chain,
+      network,
       details: details || {},
     };
     auditAnchor.record('agent_activity', {
@@ -635,6 +667,7 @@ app.post('/api/events/agent-activity', apiAuthenticator.requireAnyRole('runtime'
       };
 
       bridge.broadcastEvent(hitlEvent);
+      void notifier.notifyForDecision({ agent_id, action: event.action, request_id: hitlEvent.request_id, status: 'pending_hitl', expires_at: hitlEvent.expires_at, score: anomalyResult.evaluation.anomaly_score, rules: anomalyResult.evaluation.rules_triggered, requires_hitl: true }).catch(error => logger.error('[Server] Notifier failed', { error: String(error) }));
       logger.broadcastEvent(hitlEvent);
 
       // Handle HITL in background
@@ -727,6 +760,7 @@ app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runt
       };
 
       bridge.broadcastEvent(hitlEvent);
+      if (requires_hitl) void notifier.notifyForDecision({ agent_id, action: violation_type, request_id: hitlEvent.request_id, status: 'pending_hitl', expires_at: hitlEvent.expires_at, score: severity === 'critical' ? 95 : severity === 'high' ? 70 : severity === 'medium' ? 50 : 20, rules: [], requires_hitl: true }).catch(error => logger.error('[Server] Notifier failed', { error: String(error) }));
 
       // Handle HITL in background
       hitlHandler

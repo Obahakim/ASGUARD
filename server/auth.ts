@@ -7,12 +7,12 @@ export type ApiRole = (typeof API_ROLES)[number];
 export interface ApiCredential {
   id: string;
   token: string;
-  roles: ApiRole[];
+  roles: readonly ApiRole[];
 }
 
 export interface ApiIdentity {
   id: string;
-  roles: ApiRole[];
+  roles: readonly ApiRole[];
 }
 
 export class AuthConfigurationError extends Error {}

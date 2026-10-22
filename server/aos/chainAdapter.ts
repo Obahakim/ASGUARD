@@ -101,4 +101,4 @@ export class SolanaDevnetAdapter implements ChainAdapter {
   }
 }
 
-export const chainAdapter: ChainAdapter = new SolanaDevnetAdapter();
+export const solanaAdapter: ChainAdapter = new SolanaDevnetAdapter();

@@ -40,7 +40,8 @@ function loadLocalIntents(): void {
 
 const transitions: Record<TransactionIntentStatus, TransactionIntentStatus[]> = {
   created: ['evaluating', 'expired'],
-  evaluating: ['blocked', 'awaiting_approval', 'approved', 'failed', 'expired'],
+  evaluating: ['blocked', 'awaiting_approval', 'approved', 'pending_hitl', 'rejected', 'failed', 'expired'],
+  pending_hitl: ['approved', 'rejected', 'expired'],
   blocked: [],
   awaiting_approval: ['approved', 'rejected', 'expired'],
   approved: ['authorized', 'rejected', 'expired'],
