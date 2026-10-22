@@ -1,184 +1,226 @@
-import type { Request, Response } from 'express';
-import type { ApiIdentity } from './auth';
-import type { AsguardPolicy } from './types';
+import { AuditChainEntry } from './types';
+import { logger } from './logger';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import { getAuditSigningKey } from './auditConfig';
 
-export interface McpServices {
-  getStatus(): Promise<Record<string, unknown>>;
-  getPolicy(): AsguardPolicy;
-  reportActivity(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
-  reportViolation(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
-  guardAndSendSolana(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
-  getTransactionStatus(id: string): unknown;
-}
+/**
+ * AuditChain maintains cryptographically signed, chain-linked audit logs.
+ */
+export class AuditChain {
+  private chain: AuditChainEntry[] = [];
+  private chainFile: string;
+  private signingKey: string;
+  private sequenceNumber: number = 0;
 
-type McpRequest = { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
-const PROTOCOL_VERSION = '2025-03-26';
-
-const tools = [
-  {
-    name: 'asguard_get_status',
-    description: 'Read ASGUARD runtime and configured chain health.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    name: 'asguard_get_policy',
-    description: 'Read the active ASGUARD safety policy before proposing an agent action.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    name: 'asguard_get_transaction_status',
-    description: 'Read the current state of a previously submitted or blocked ASGUARD transaction intent.',
-    inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1, maxLength: 128 } }, additionalProperties: false },
-  },
-  {
-    name: 'asguard_report_activity',
-    description: 'Submit observed agent activity to the existing anomaly rules, audit chain, and human approval workflow.',
-    inputSchema: {
-      type: 'object',
-      required: ['agent_id', 'agent_name', 'action', 'risk_level'],
-      properties: {
-        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
-        agent_name: { type: 'string', minLength: 1, maxLength: 128 },
-        action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
-        details: { type: 'object' },
-        amount_usd: { type: 'number', minimum: 0 },
-        ip_address: { type: 'string' },
-        device_id: { type: 'string' },
-        contract_address: { type: 'string' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'asguard_guarded_solana_send',
-    description: 'Evaluate a signed Solana devnet transaction against ASGUARD policy, simulate it, request a human decision when risk is detected, then submit only after approval.',
-    inputSchema: {
-      type: 'object',
-      required: ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'risk_level', 'amount_usd', 'transaction_base64'],
-      properties: {
-        idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
-        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
-        agent_name: { type: 'string', minLength: 1, maxLength: 128 },
-        wallet_id: { type: 'string', minLength: 1, maxLength: 128 },
-        action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
-        amount_usd: { type: 'number', minimum: 0 },
-        transaction_base64: { type: 'string', minLength: 1, maxLength: 1500000 },
-        ip_address: { type: 'string' },
-        device_id: { type: 'string' },
-        contract_address: { type: 'string' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'asguard_report_security_violation',
-    description: 'Report a suspected compromised or unsafe agent and wait for an authenticated human decision.',
-    inputSchema: {
-      type: 'object', required: ['agent_id', 'violation_type', 'severity'],
-      properties: {
-        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
-        violation_type: { type: 'string', minLength: 1, maxLength: 256 },
-        severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-        context: { type: 'object' },
-      }, additionalProperties: false,
-    },
-  },
-];
-
-function response(id: McpRequest['id'], result: unknown) {
-  return { jsonrpc: '2.0', id, result };
-}
-
-function errorResponse(id: McpRequest['id'], code: number, message: string) {
-  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
-}
-
-export function handleMcpRequest(req: Request, res: Response, services: McpServices): void {
-  const message = req.body as McpRequest;
-  const id = message?.id;
-  if (message?.jsonrpc !== '2.0' || typeof message.method !== 'string') {
-    res.status(400).json(errorResponse(id, -32600, 'Invalid JSON-RPC request.'));
-    return;
-  }
-
-  if (message.method.startsWith('notifications/')) {
-    res.sendStatus(202);
-    return;
-  }
-  if (id === undefined) {
-    res.status(400).json(errorResponse(null, -32600, 'A JSON-RPC request ID is required.'));
-    return;
-  }
-
-  void (async () => {
-    try {
-      if (message.method === 'initialize') {
-        res.json(response(id, {
-          protocolVersion: PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: { name: 'asguard', version: '1.0.0' },
-        }));
-      } else if (message.method === 'ping') {
-        res.json(response(id, {}));
-      } else if (message.method === 'tools/list') {
-        res.json(response(id, { tools }));
-      } else if (message.method === 'tools/call') {
-        const params = message.params ?? {};
-        const name = params.name;
-        const args = (params.arguments ?? {}) as Record<string, unknown>;
-        let value: unknown;
-        if (name === 'asguard_get_status') {
-          value = await services.getStatus();
-        } else if (name === 'asguard_get_policy') {
-          if (!req.asguardIdentity?.roles.some((role) => ['admin', 'operator', 'auditor'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to read policy.'));
-            return;
-          }
-          value = services.getPolicy();
-        } else if (name === 'asguard_get_transaction_status') {
-          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin', 'operator', 'auditor'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to read transaction status.'));
-            return;
-          }
-          const transactionId = args.id;
-          if (typeof transactionId !== 'string') {
-            res.status(400).json(errorResponse(id, -32602, 'id is required.'));
-            return;
-          }
-          value = services.getTransactionStatus(transactionId) ?? { found: false };
-        } else if (name === 'asguard_report_activity') {
-          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to report runtime activity.'));
-            return;
-          }
-          value = await services.reportActivity(args, req.asguardIdentity);
-        } else if (name === 'asguard_report_security_violation') {
-          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to report a runtime security violation.'));
-            return;
-          }
-          value = await services.reportViolation(args, req.asguardIdentity);
-        } else if (name === 'asguard_guarded_solana_send') {
-          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to request a guarded transaction.'));
-            return;
-          }
-          value = await services.guardAndSendSolana(args, req.asguardIdentity);
-        } else {
-          res.status(400).json(errorResponse(id, -32602, 'Unknown ASGUARD tool.'));
-          return;
-        }
-        res.json(response(id, { content: [{ type: 'text', text: JSON.stringify(value) }], isError: false }));
-      } else {
-        res.status(400).json(errorResponse(id, -32601, 'Method not found.'));
-      }
-    } catch (error) {
-      res.json(response(id, {
-        content: [{ type: 'text', text: error instanceof Error ? error.message : 'ASGUARD operation failed.' }],
-        isError: true,
-      }));
+  constructor(chainFilePath?: string) {
+    this.signingKey = getAuditSigningKey();
+    this.chainFile = chainFilePath || path.join(
+      process.env.HOME || '/tmp',
+      '.astrid/audit_chain.json'
+    );
+    this.loadChain();
+    if (!this.verifyChainIntegrity()) {
+      throw new Error('Audit chain integrity check failed during startup.');
     }
-  })();
+  }
+
+  private loadChain(): void {
+    if (!fs.existsSync(this.chainFile)) {
+      return;
+    }
+
+    const data = fs.readFileSync(this.chainFile, 'utf-8');
+    const parsed = JSON.parse(data) as { entries?: unknown; sequence?: unknown };
+    if (!Array.isArray(parsed.entries) || !Number.isInteger(parsed.sequence)) {
+      throw new Error('Audit chain file has an invalid format.');
+    }
+
+    this.chain = parsed.entries as AuditChainEntry[];
+    this.sequenceNumber = parsed.sequence as number;
+    logger.info(`[AuditChain] Loaded ${this.chain.length} entries from chain`);
+  }
+
+  addEntry(
+    eventId: string,
+    agentId: string,
+    action: string,
+    anomalyScore?: number
+  ): AuditChainEntry {
+    return this.addDecision({ eventId, agentId, action, anomalyScore });
+  }
+
+  addDecision(input: {
+    eventId: string;
+    agentId: string;
+    action: string;
+    anomalyScore?: number;
+    actorId?: string;
+    reason?: string;
+    metadata?: Record<string, unknown>;
+  }): AuditChainEntry {
+    const previousHash = this.chain.length > 0 ? this.chain[this.chain.length - 1].entry_hash : 'genesis';
+
+    const entry: AuditChainEntry = {
+      sequence_number: this.sequenceNumber++,
+      timestamp: new Date().toISOString(),
+      event_id: input.eventId,
+      agent_id: input.agentId,
+      action: input.action,
+      anomaly_score: input.anomalyScore,
+      previous_hash: previousHash,
+      entry_hash: '',
+      signature: '',
+      actor_id: input.actorId,
+      reason: input.reason,
+      metadata: input.metadata,
+    };
+
+    const entryData = JSON.stringify({
+      sequence: entry.sequence_number,
+      timestamp: entry.timestamp,
+      event_id: entry.event_id,
+      agent_id: entry.agent_id,
+      action: entry.action,
+      anomaly_score: entry.anomaly_score,
+      previous_hash: entry.previous_hash,
+      actor_id: entry.actor_id,
+      reason: entry.reason,
+      metadata: entry.metadata,
+    });
+
+    entry.entry_hash = crypto.createHash('sha256').update(entryData).digest('hex');
+    entry.signature = crypto.createHmac('sha256', this.signingKey).update(`${entry.entry_hash}${entry.previous_hash}`).digest('hex');
+
+    this.chain.push(entry);
+    try {
+      this.persistChain();
+    } catch (error) {
+      this.chain.pop();
+      this.sequenceNumber -= 1;
+      throw error;
+    }
+
+    logger.debug(`[AuditChain] Added entry ${entry.sequence_number}: ${input.action}`, {
+      agent: input.agentId,
+      score: input.anomalyScore,
+      actor: input.actorId,
+    } as Record<string, unknown>);
+
+    return entry;
+  }
+
+  verifyChainIntegrity(): boolean {
+    let previousHash = 'genesis';
+
+    for (const [index, entry] of this.chain.entries()) {
+      if (entry.sequence_number !== index) {
+        logger.error(`[AuditChain] Unexpected sequence number at index ${index}`);
+        return false;
+      }
+
+      if (entry.previous_hash !== previousHash) {
+        logger.error(`[AuditChain] Chain broken at sequence ${entry.sequence_number}`);
+        return false;
+      }
+
+      const entryData = JSON.stringify({
+        sequence: entry.sequence_number,
+        timestamp: entry.timestamp,
+        event_id: entry.event_id,
+        agent_id: entry.agent_id,
+        action: entry.action,
+        anomaly_score: entry.anomaly_score,
+        previous_hash: entry.previous_hash,
+        actor_id: entry.actor_id,
+        reason: entry.reason,
+        metadata: entry.metadata,
+      });
+
+      const expectedHash = crypto.createHash('sha256').update(entryData).digest('hex');
+      if (entry.entry_hash !== expectedHash) {
+        logger.error(`[AuditChain] Entry hash mismatch at sequence ${entry.sequence_number}`);
+        return false;
+      }
+
+      const expectedSignature = crypto.createHmac('sha256', this.signingKey).update(`${entry.entry_hash}${entry.previous_hash}`).digest('hex');
+      if (entry.signature !== expectedSignature) {
+        logger.error(`[AuditChain] Signature verification failed at sequence ${entry.sequence_number}`);
+        return false;
+      }
+
+      previousHash = entry.entry_hash;
+    }
+
+    return this.sequenceNumber === this.chain.length;
+  }
+
+  getEntriesForAgent(agentId: string): AuditChainEntry[] {
+    return this.chain.filter((entry) => entry.agent_id === agentId);
+  }
+
+  getEntriesByTimeRange(startTime: Date, endTime: Date): AuditChainEntry[] {
+    const startMs = startTime.getTime();
+    const endMs = endTime.getTime();
+    return this.chain.filter((entry) => {
+      const entryMs = new Date(entry.timestamp).getTime();
+      return entryMs >= startMs && entryMs <= endMs;
+    });
+  }
+
+  getRecentEntries(limit: number = 100): AuditChainEntry[] {
+    return this.chain.slice(-limit);
+  }
+
+  getStats() {
+    return {
+      total_entries: this.chain.length,
+      chain_valid: this.verifyChainIntegrity(),
+      last_entry: this.chain.length > 0 ? this.chain[this.chain.length - 1].timestamp : null,
+      sequence_number: this.sequenceNumber,
+    };
+  }
+
+  exportChain(): { entries: AuditChainEntry[]; integrity_verified: boolean } {
+    return {
+      entries: this.chain,
+      integrity_verified: this.verifyChainIntegrity(),
+    };
+  }
+
+  private persistChain(): void {
+    const chainDir = path.dirname(this.chainFile);
+    if (!fs.existsSync(chainDir)) {
+      fs.mkdirSync(chainDir, { recursive: true });
+    }
+
+    const temporaryPath = `${this.chainFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(
+        temporaryPath,
+        JSON.stringify({
+          entries: this.chain,
+          sequence: this.sequenceNumber,
+          last_updated: new Date().toISOString(),
+        }, null, 2),
+        'utf-8'
+      );
+      fs.renameSync(temporaryPath, this.chainFile);
+    } catch (error) {
+      if (fs.existsSync(temporaryPath)) {
+        fs.unlinkSync(temporaryPath);
+      }
+      logger.error('[AuditChain] Failed to persist chain:', { error: String(error) });
+      throw error;
+    }
+  }
+
+  clearChain(): void {
+    this.chain = [];
+    this.sequenceNumber = 0;
+    logger.warn('[AuditChain] Chain cleared');
+  }
 }
+
+export default AuditChain;

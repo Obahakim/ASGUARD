@@ -1,68 +1,100 @@
-{
-  "name": "black-friday-map",
-  "version": "0.1.0",
-  "private": true,
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "scripts": {
-    "build": "next build",
-    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch server/index.ts\"",
-    "dev:frontend": "next dev",
-    "dev:backend": "node --env-file=.env --import tsx --watch server/index.ts",
-    "lint": "eslint",
-    "start": "next start",
-    "backend:start": "node dist/server/index.js",
-    "demo:trader": "node --env-file=.env --import tsx scripts/demo-trader.ts",
-    "build:capsule": "cd capsule && cargo build --release",
-    "install:local": "./install.sh",
-    "daemon:start": "./scripts/asguard.sh start",
-    "daemon:status": "./scripts/asguard.sh status",
-    "daemon:logs": "./scripts/asguard.sh logs",
-    "daemon:policy": "./scripts/asguard.sh policy",
-    "daemon:audit": "./scripts/asguard.sh audit",
-    "daemon:uninstall": "./scripts/asguard.sh uninstall"
-  },
-  "bin": {
-    "asguard": "./scripts/asguard.sh"
-  },
-  "dependencies": {
-    "@emotion/is-prop-valid": "latest",
-    "@types/topojson-client": "^3.1.5",
-    "@unicitylabs/sphere-sdk": "0.17.7",
-    "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
-    "d3-geo": "^3.1.1",
-    "drizzle-orm": "^0.45.2",
-    "express": "^4.18.2",
-    "framer-motion": "^12.23.25",
-    "jiti": "latest",
-    "lucide-react": "0.555.0",
-    "next": "16.0.6",
-    "pg": "^8.23.0",
-    "prop-types": "latest",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "tailwind-merge": "3.4.0",
-    "tailwindcss-animate": "1.0.7",
-    "topojson-client": "^3.1.0",
-    "ws": "^8.14.2"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/d3-geo": "^3.1.0",
-    "@types/express": "^4.17.21",
-    "@types/node": "^20",
-    "@types/pg": "^8.23.1",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@types/ws": "^8.5.8",
-    "concurrently": "^8.2.2",
-    "eslint": "^9",
-    "eslint-config-next": "16.0.6",
-    "postcss": "8.5.6",
-    "tailwindcss": "^4",
-    "tsx": "^4.7.0",
-    "typescript": "^5"
-  }
-}
+# ASGUARD
+
+ASGUARD is a second pair of eyes for agents that move value. It does not hold private keys or replace the trading engine. Instead, it evaluates proposed actions before signing and blocks or escalates when policy or anomaly rules are violated.
+
+## What ASGUARD is and is not
+
+ASGUARD is:
+- a pre-sign approval layer for runtime agents and hosts
+- a policy and anomaly evaluator
+- an audit chain and human-in-the-loop gate
+- a notifier for high-severity events
+
+ASGUARD is not:
+- a key custodian
+- a wallet signer
+- a replacement for local trading logic
+- a place to store or log raw secrets, seed phrases, or private keys
+
+## Architecture
+
+Agent -> request approval -> attestation -> local signer -> chain
+
+The preferred flow is:
+1. runtime prepares a signed payload hash or canonical intent bytes
+2. ASGUARD evaluates risk and policy
+3. ASGUARD returns either:
+   - approved + short-lived attestation
+   - pending HITL approval
+   - rejected / blocked
+4. host verifies attestation locally and only then signs in-process
+
+## MCP tools
+
+Key tools:
+- asguard_request_sign_approval
+- asguard_report_activity
+- asguard_get_policy
+- asguard_get_status
+- asguard_guarded_solana_send (compatibility wrapper)
+- asguard_report_security_violation
+
+## Pre-sign approval model
+
+ASGUARD accepts a network-agnostic approval request with:
+- agent_id
+- agent_name
+- action
+- risk_level
+- payload_hash
+- network
+- amount_usd
+- ip_address
+- device_id
+- contract_address
+- wallet_id
+- idempotency_key
+- details
+
+A valid approval returns a short-lived attestation signed with the ASGUARD audit HMAC key. The host must verify:
+- signature is valid
+- attestation not expired
+- sha256(bytesToSign) matches payload_hash
+- agent_id and amount bounds are acceptable
+- the action is exactly the same requested intent
+
+## Environment variables
+
+Required or recommended:
+- ASGUARD_API_CREDENTIALS: JSON array of runtime/admin credentials
+- ASGUARD_AUDIT_KEY: shared signing key used for attestation and audit integrity
+- ASGUARD_PORT / ASGUARD_HOST
+- ASGUARD_ALLOWED_ORIGINS
+- ASGUARD_APPROVAL_TTL_MS: approval expiry, default 120000
+- TELEGRAM_WEBHOOK_URL / SLACK_WEBHOOK_URL / DISCORD_WEBHOOK_URL / ASGUARD_GENERIC_WEBHOOK_URL
+
+## Quickstart
+
+1. Configure ASGUARD_API_CREDENTIALS.
+2. Set ASGUARD_AUDIT_KEY to a strong shared secret.
+3. Start the backend.
+4. Use the MCP approval request or REST endpoint.
+5. Verify the attestation locally before signing.
+
+## Threat badge legend and notifications
+
+- LOW (0-39): dashboard digest only
+- ELEVATED (40-69): notification with dedupe
+- HIGH (70-89): push + Telegram/Slack/webhook; action required
+- CRITICAL (90-100): multi-channel repeated notifications until resolved or expired
+
+Timeouts default to deny. High-risk requests without human resolution remain blocked.
+
+## Integration guidance for agents
+
+Only expose signed, gated tools to your agents. Never expose raw sign/send methods directly. The host should do local verification before calling the wallet or chain adapter.
+
+## Security summary
+
+ASGUARD never stores raw signing secrets. It can issue short-lived attestations to permit local signing only after verification of the exact payload.
+

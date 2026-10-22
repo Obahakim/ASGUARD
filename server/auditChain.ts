@@ -1,254 +1,189 @@
-import { AuditChainEntry } from './types';
+import { EvaluationResult, RuleViolation, AgentActivityEvent, AsguardPolicy } from './types';
+import { ProfileManager } from './profileManager';
+import { ContractValidator } from './contractValidator';
 import { logger } from './logger';
-import * as crypto from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-import { getAuditSigningKey } from './auditConfig';
 
 /**
- * AuditChain maintains cryptographically signed, chain-linked audit logs
- * Ensures immutability and tamper-detection
+ * Evaluator applies anomaly rules against a real, time-windowed behavioral profile.
  */
-export class AuditChain {
-  private chain: AuditChainEntry[] = [];
-  private chainFile: string;
-  private signingKey: string;
-  private sequenceNumber: number = 0;
+export class Evaluator {
+  private profileManager: ProfileManager;
+  private contractValidator: ContractValidator;
 
-  constructor(chainFilePath?: string) {
-    this.signingKey = getAuditSigningKey();
-    this.chainFile = chainFilePath || path.join(
-      process.env.HOME || '/tmp',
-      '.astrid/audit_chain.json'
-    );
-    this.loadChain();
-    if (!this.verifyChainIntegrity()) {
-      throw new Error('Audit chain integrity check failed during startup.');
-    }
+  constructor(profileManager: ProfileManager, contractValidator: ContractValidator) {
+    this.profileManager = profileManager;
+    this.contractValidator = contractValidator;
   }
 
-  /**
-   * Load chain from persistent storage
-   */
-  private loadChain(): void {
-    if (!fs.existsSync(this.chainFile)) {
-      return;
-    }
-
-    const data = fs.readFileSync(this.chainFile, 'utf-8');
-    const parsed = JSON.parse(data) as { entries?: unknown; sequence?: unknown };
-    if (!Array.isArray(parsed.entries) || !Number.isInteger(parsed.sequence)) {
-      throw new Error('Audit chain file has an invalid format.');
-    }
-
-    this.chain = parsed.entries as AuditChainEntry[];
-    this.sequenceNumber = parsed.sequence as number;
-    logger.info(`[AuditChain] Loaded ${this.chain.length} entries from chain`);
-  }
-
-  /**
-   * Add entry to chain with HMAC signature
-   */
-  addEntry(
-    eventId: string,
-    agentId: string,
-    action: string,
-    anomalyScore?: number
-  ): AuditChainEntry {
-    const previousHash = this.chain.length > 0
-      ? this.chain[this.chain.length - 1].entry_hash
-      : 'genesis';
-
-    const entry: AuditChainEntry = {
-      sequence_number: this.sequenceNumber++,
+  async evaluate(
+    activity: AgentActivityEvent,
+    metadata: {
+      amount_usd?: number;
+      ip_address?: string;
+      device_id?: string;
+      contract_address?: string;
+    },
+    policy: AsguardPolicy
+  ): Promise<EvaluationResult> {
+    const result: EvaluationResult = {
+      agent_id: activity.agent_id,
+      anomaly_score: 0,
+      rules_triggered: [],
+      action: 'silent_pass',
+      confidence: 100,
       timestamp: new Date().toISOString(),
-      event_id: eventId,
-      agent_id: agentId,
-      action,
-      anomaly_score: anomalyScore,
-      previous_hash: previousHash,
-      entry_hash: '',
-      signature: '',
     };
 
-    // Calculate entry hash
-    const entryData = JSON.stringify({
-      sequence: entry.sequence_number,
-      timestamp: entry.timestamp,
-      event_id: entry.event_id,
-      agent_id: entry.agent_id,
-      action: entry.action,
-      anomaly_score: entry.anomaly_score,
-      previous_hash: entry.previous_hash,
-    });
-
-    entry.entry_hash = crypto
-      .createHash('sha256')
-      .update(entryData)
-      .digest('hex');
-
-    // Sign with HMAC
-    entry.signature = crypto
-      .createHmac('sha256', this.signingKey)
-      .update(`${entry.entry_hash}${entry.previous_hash}`)
-      .digest('hex');
-
-    this.chain.push(entry);
-    try {
-      this.persistChain();
-    } catch (error) {
-      this.chain.pop();
-      this.sequenceNumber -= 1;
-      throw error;
+    if (!policy.strict_anomaly_detection) {
+      logger.debug(`[Evaluator] Anomaly detection disabled for ${activity.agent_id}`);
+      return result;
     }
 
-    logger.debug(`[AuditChain] Added entry ${entry.sequence_number}: ${action}`, {
-      agent: agentId,
-      score: anomalyScore,
+    const profileMature = this.profileManager.isProfileMature(activity.agent_id);
+    if (!profileMature) {
+      logger.debug(`[Evaluator] Profile not mature for ${activity.agent_id}; enforcing budget/contract checks only`);
+    }
+
+    await this.checkUnverifiedContract(activity, metadata, result, policy);
+    this.checkBudgetOverrun(activity, metadata, policy, result);
+
+    if (profileMature) {
+      await this.checkIPBreach(activity, metadata, policy, result);
+      this.checkFrequencySpike(activity, metadata, result);
+    }
+
+    result.anomaly_score = Math.min(100, result.rules_triggered.reduce((sum, rule) => sum + rule.score_contribution, 0));
+
+    if (result.hard_blocked || result.anomaly_score >= 70) {
+      result.action = 'halt_and_hitl';
+      result.confidence = 95;
+    } else if (result.anomaly_score >= 40) {
+      result.action = 'warn';
+      result.confidence = 85;
+    } else {
+      result.action = 'silent_pass';
+      result.confidence = 100;
+    }
+
+    logger.info(`[Evaluator] Score: ${result.anomaly_score} | Action: ${result.action} | Agent: ${activity.agent_id}`, {
+      rules: result.rules_triggered.length,
+      confidence: result.confidence,
+      hard_blocked: result.hard_blocked,
     } as Record<string, unknown>);
 
-    return entry;
+    return result;
   }
 
-  /**
-   * Verify chain integrity (tamper detection)
-   */
-  verifyChainIntegrity(): boolean {
-    let previousHash = 'genesis';
+  private async checkIPBreach(
+    activity: AgentActivityEvent,
+    metadata: { ip_address?: string; device_id?: string },
+    policy: AsguardPolicy,
+    result: EvaluationResult
+  ): Promise<void> {
+    if (!policy.device_ip_lock) return;
 
-    for (const [index, entry] of this.chain.entries()) {
-      if (entry.sequence_number !== index) {
-        logger.error(`[AuditChain] Unexpected sequence number at index ${index}`);
-        return false;
-      }
+    const profile = this.profileManager.getProfile(activity.agent_id);
+    if (profile.baseline_ips.size === 0 && profile.baseline_devices.size === 0) return;
 
-      // Check previous hash link
-      if (entry.previous_hash !== previousHash) {
-        logger.error(`[AuditChain] Chain broken at sequence ${entry.sequence_number}`);
-        return false;
-      }
-
-      // Verify HMAC signature
-      const entryData = JSON.stringify({
-        sequence: entry.sequence_number,
-        timestamp: entry.timestamp,
-        event_id: entry.event_id,
-        agent_id: entry.agent_id,
-        action: entry.action,
-        anomaly_score: entry.anomaly_score,
-        previous_hash: entry.previous_hash,
+    if (metadata.ip_address && !profile.baseline_ips.has(metadata.ip_address)) {
+      result.rules_triggered.push({
+        rule_id: 'ip_breach',
+        severity: 'high',
+        score_contribution: 35,
+        details: {
+          new_ip: metadata.ip_address,
+          known_ips: Array.from(profile.baseline_ips),
+          breach_type: 'unknown_location',
+        },
       });
-
-      const expectedHash = crypto
-        .createHash('sha256')
-        .update(entryData)
-        .digest('hex');
-
-      if (entry.entry_hash !== expectedHash) {
-        logger.error(`[AuditChain] Entry hash mismatch at sequence ${entry.sequence_number}`);
-        return false;
-      }
-
-      const expectedSignature = crypto
-        .createHmac('sha256', this.signingKey)
-        .update(`${entry.entry_hash}${entry.previous_hash}`)
-        .digest('hex');
-
-      if (entry.signature !== expectedSignature) {
-        logger.error(`[AuditChain] Signature verification failed at sequence ${entry.sequence_number}`);
-        return false;
-      }
-
-      previousHash = entry.entry_hash;
     }
 
-    return this.sequenceNumber === this.chain.length;
-  }
-
-  /**
-   * Get entries for an agent
-   */
-  getEntriesForAgent(agentId: string): AuditChainEntry[] {
-    return this.chain.filter(e => e.agent_id === agentId);
-  }
-
-  /**
-   * Get entries in time range
-   */
-  getEntriesByTimeRange(startTime: Date, endTime: Date): AuditChainEntry[] {
-    const startMs = startTime.getTime();
-    const endMs = endTime.getTime();
-    return this.chain.filter(e => {
-      const entryMs = new Date(e.timestamp).getTime();
-      return entryMs >= startMs && entryMs <= endMs;
-    });
-  }
-
-  /**
-   * Get recent entries
-   */
-  getRecentEntries(limit: number = 100): AuditChainEntry[] {
-    return this.chain.slice(-limit);
-  }
-
-  /**
-   * Get chain statistics
-   */
-  getStats() {
-    return {
-      total_entries: this.chain.length,
-      chain_valid: this.verifyChainIntegrity(),
-      last_entry: this.chain.length > 0 ? this.chain[this.chain.length - 1].timestamp : null,
-      sequence_number: this.sequenceNumber,
-    };
-  }
-
-  /**
-   * Export chain for auditing
-   */
-  exportChain(): { entries: AuditChainEntry[]; integrity_verified: boolean } {
-    return {
-      entries: this.chain,
-      integrity_verified: this.verifyChainIntegrity(),
-    };
-  }
-
-  /**
-   * Persist chain to disk
-   */
-  private persistChain(): void {
-    const chainDir = path.dirname(this.chainFile);
-    if (!fs.existsSync(chainDir)) {
-      fs.mkdirSync(chainDir, { recursive: true });
-    }
-
-    const temporaryPath = `${this.chainFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    try {
-      fs.writeFileSync(
-        temporaryPath,
-        JSON.stringify({
-          entries: this.chain,
-          sequence: this.sequenceNumber,
-          last_updated: new Date().toISOString(),
-        }, null, 2),
-        'utf-8'
-      );
-      fs.renameSync(temporaryPath, this.chainFile);
-    } catch (error) {
-      if (fs.existsSync(temporaryPath)) {
-        fs.unlinkSync(temporaryPath);
-      }
-      logger.error('[AuditChain] Failed to persist chain:', { error: String(error) });
-      throw error;
+    if (metadata.device_id && !profile.baseline_devices.has(metadata.device_id)) {
+      result.rules_triggered.push({
+        rule_id: 'ip_breach',
+        severity: 'high',
+        score_contribution: 30,
+        details: {
+          new_device: metadata.device_id,
+          known_devices: Array.from(profile.baseline_devices),
+          breach_type: 'unknown_device',
+        },
+      });
     }
   }
 
-  /**
-   * Clear chain (for testing only)
-   */
-  clearChain(): void {
-    this.chain = [];
-    this.sequenceNumber = 0;
-    logger.warn('[AuditChain] Chain cleared');
+  private checkBudgetOverrun(
+    activity: AgentActivityEvent,
+    metadata: { amount_usd?: number },
+    policy: AsguardPolicy,
+    result: EvaluationResult
+  ): void {
+    const amount = typeof metadata.amount_usd === 'number' ? metadata.amount_usd : 0;
+    if (amount <= 0) return;
+    if (amount > policy.max_auto_trade_usd) {
+      result.hard_blocked = true;
+      result.rules_triggered.push({
+        rule_id: 'budget_overrun',
+        severity: 'high',
+        score_contribution: 80,
+        details: {
+          amount_usd: amount,
+          max_auto_trade_usd: policy.max_auto_trade_usd,
+          overage: amount - policy.max_auto_trade_usd,
+        },
+      });
+      logger.warn(`[Rule:BudgetOverrun] Amount $${amount} exceeds limit $${policy.max_auto_trade_usd} for ${activity.agent_id}`);
+    }
+  }
+
+  private checkFrequencySpike(
+    activity: AgentActivityEvent,
+    metadata: Record<string, unknown>,
+    result: EvaluationResult
+  ): void {
+    const rate = this.profileManager.getActivityRate(activity.agent_id);
+    if (!rate.mature) return;
+    if (rate.baseline_rate_per_hour <= 0) return;
+
+    const multiplier = rate.current_rate_per_hour / rate.baseline_rate_per_hour;
+    if (multiplier >= 3) {
+      result.rules_triggered.push({
+        rule_id: 'frequency_spike',
+        severity: 'medium',
+        score_contribution: 35,
+        details: {
+          current_rate_per_hour: rate.current_rate_per_hour,
+          baseline_rate_per_hour: rate.baseline_rate_per_hour,
+          multiplier,
+        },
+      });
+      logger.warn(`[Rule:FrequencySpike] Frequency spike for ${activity.agent_id}: ${multiplier.toFixed(2)}x baseline`);
+    }
+  }
+
+  private async checkUnverifiedContract(
+    activity: AgentActivityEvent,
+    metadata: { contract_address?: string },
+    result: EvaluationResult,
+    policy: AsguardPolicy
+  ): Promise<void> {
+    if (!metadata.contract_address) return;
+    const validation = await this.contractValidator.validateContract(metadata.contract_address);
+    if (!validation.is_verified) {
+      const contribution = policy.strict_anomaly_detection ? 60 : 35;
+      result.rules_triggered.push({
+        rule_id: 'unverified_contract',
+        severity: 'high',
+        score_contribution: contribution,
+        details: {
+          contract_address: metadata.contract_address,
+          verification_type: validation.verification_type,
+          trust_score: validation.details?.trust_score ?? 0,
+        },
+      });
+      logger.warn(`[Rule:UnverifiedContract] Unverified contract ${metadata.contract_address} for ${activity.agent_id}`);
+    }
   }
 }
+
+export default Evaluator;
