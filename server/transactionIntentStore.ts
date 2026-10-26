@@ -2,8 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { TransactionIntent, TransactionIntentStatus, TransactionSimulation } from './types';
-import { persistIntent } from './neonStore';
+import type { TransactionIntent, TransactionIntentStatus, TransactionPreflight } from './types';
 
 const intents = new Map<string, TransactionIntent>();
 const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.astrid', 'transaction_intents.json');
@@ -80,7 +79,6 @@ export function createTransactionIntent(
     intents.delete(intent.id);
     throw error;
   }
-  void persistIntent(intent).catch(() => undefined);
   return intent;
 }
 
@@ -96,15 +94,26 @@ export function transitionTransactionIntent(id: string, status: TransactionInten
     intents.set(id, intent);
     throw error;
   }
-  void persistIntent(updated).catch(() => undefined);
   return updated;
 }
 
-export function recordSimulation(id: string, simulation: TransactionSimulation): TransactionIntent {
+export function recordPreflight(id: string, preflight: TransactionPreflight): TransactionIntent {
   const intent = intents.get(id);
   if (!intent) throw new Error('transaction intent not found');
-  if (intent.status !== 'evaluating') throw new Error('intent must be evaluating before simulation is recorded');
-  return transitionTransactionIntent(id, simulation.status === 'passed' ? 'awaiting_approval' : 'blocked');
+  if (intent.status !== 'evaluating') throw new Error('intent must be evaluating before preflight is recorded');
+  const updated = {
+    ...intent,
+    preflight: structuredClone(preflight),
+    updated_at: now(),
+  };
+  intents.set(id, updated);
+  try {
+    persistLocalIntents();
+  } catch (error) {
+    intents.set(id, intent);
+    throw error;
+  }
+  return updated;
 }
 
 export function getTransactionIntent(id: string): TransactionIntent | undefined {

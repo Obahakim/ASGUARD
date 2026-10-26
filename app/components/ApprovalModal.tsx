@@ -29,6 +29,9 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
     : severity === 'ELEVATED'
       ? 'border-amber-400/40 bg-amber-400/10 text-amber-200'
       : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200';
+  const preflight = request.context.preflight && typeof request.context.preflight === 'object'
+    ? request.context.preflight as Record<string, unknown>
+    : undefined;
 
   const handleAction = async (action: 'allow_once' | 'allow_session' | 'deny_terminate') => {
     setError('');
@@ -74,6 +77,11 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
 
           {/* Context Details */}
           <div className="max-h-56 overflow-auto rounded-lg border asguard-border bg-slate-800/50 p-4">
+            {preflight && <div className="mb-3 rounded border border-cyan-400/30 bg-cyan-400/5 p-3 text-xs">
+              <p className="font-semibold uppercase tracking-wide text-cyan-200">Preflight: {String(preflight.status ?? 'unknown')}</p>
+              <p className="mt-1 text-slate-300">{String(preflight.kind ?? 'policy evaluation')} · {preflight.checked_at ? new Date(String(preflight.checked_at)).toLocaleString() : 'time unavailable'}</p>
+              {Array.isArray(preflight.reasons) && preflight.reasons.length > 0 && <p className={preflight.status === 'blocked' ? 'mt-1 text-red-200' : 'mt-1 text-amber-200'}>{preflight.status === 'blocked' ? 'Policy blocks' : 'Review reasons'}: {preflight.reasons.map(String).join(', ')}</p>}
+            </div>}
             <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Incident context</p>
             <pre className="whitespace-pre-wrap break-words text-xs text-slate-200">{JSON.stringify(request.context, null, 2)}</pre>
             <p className="mt-3 text-xs text-slate-500">Expires {new Date(request.expires_at).toLocaleString()}</p>

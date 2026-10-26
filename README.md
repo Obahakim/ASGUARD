@@ -1,72 +1,56 @@
 # ASGUARD
 
-ASGUARD is a non-custodial pre-approval layer: a second pair of eyes for agents that move value. It evaluates a proposed action before the host's local signer or runtime executes it. ASGUARD never receives seed phrases or private keys, never signs, and never replaces a wallet, NEAR Intents, Chain Signatures, or a solver.
+ASGUARD is a non-custodial approval control plane for agent initiated value movement. It evaluates and records requests before a host wallet or runtime signs or submits them. ASGUARD never accepts private keys or seed phrases, signs transactions, runs a solver, or relays NEAR Intents.
 
-## Security Flow
+## Security flow
 
-```text
-Agent proposes a NEAR Intent or Chain Signature payload
-  -> ASGUARD canonicalizes and binds the exact payload hash
-  -> policy and anomaly evaluation
-  -> approved + short-lived attestation | pending HITL | rejected/blocked
-  -> host verifies the attestation and its domain/network/path
-  -> host signer or NEAR Intents integration may continue
-```
+The host submits an exact payload and its execution domain. ASGUARD canonicalizes supported NEAR Intents, checks policy, risk, and fresh verified USD pricing, and returns an approval, a pending human decision, or a denial. Approval responses contain a short lived HMAC attestation bound to the payload hash, agent, network, domain, and where relevant the signer contract and derivation path. The host must verify it immediately before invoking its own signer. Timeouts and unavailable human review deny. Unknown execution targets require human approval.
 
-High/critical risk, unknown value, unlisted targets, and unsupported execution targets require human review. Explicit denies, budget violations, excessive slippage, expired intents, and time-window violations are blocked. HITL timeouts deny. Only the host can sign or submit, and it must verify the attestation immediately before doing so.
+ASGUARD uses symmetric HMAC attestations. The host verifier therefore needs the audit signing secret; protect it as a signing credential and rotate it with an explicit maintenance window. Deploy ASGUARD and host signers in trusted environments, restrict credentials by role, use TLS at the deployment boundary, and never put secrets in browser code or logs.
 
-## NEAR Integration
+## NEAR paths
 
-The primary path is approval for a canonical NEAR Intent. ASGUARD accepts either the normalized `asguard.near-intent.v1` fields or a NEAR signed MultiPayload envelope (`standard` + `payload`). The current decoder supports exactly one `token_diff` with one negative input and one positive output. It extracts asset IDs, smallest-unit amounts, deadline, recipient/chain metadata when available, and slippage metadata. Unsupported or ambiguous payload shapes fail closed. The complete envelope, including the original message bytes, is included in the canonical hash.
+NEAR Intents are the primary approval path. The decoder accepts the normalized `asguard.near-intent.v1` form and the supported signed MultiPayload form. It rejects unsupported or ambiguous payloads. Its preflight is structured decode, exact canonical hash binding, policy evaluation, and fresh token price verification. It does not simulate NEAR execution and does not claim chain simulation. Missing or stale price data routes to HITL; it never trusts a caller supplied USD estimate for automatic approval.
 
-For NEAR Intents signed-payload execution, the host should obtain/build the intent, ask ASGUARD for approval, then call `withApprovedNearIntent` with the exact intent and expected agent/network/verifier. The callback runs only after verification and receives both the canonical bytes and untouched original payload; the host then signs and submits through its chosen NEAR integration. ASGUARD does not call `generate-intent` or `submit-intent`.
+Chain Signatures are secondary. The request binds the unsigned payload hash, target network, derivation path, and configured signer contract. Foreign chain risk defaults to HITL. ASGUARD does not call the signer contract.
 
-Chain Signatures is the secondary path. The host sends the unsigned foreign-chain payload hash, target network, and derivation path to ASGUARD, then calls `withApprovedChainSignature` with the expected signer contract. Its callback runs only after verification and is where the host may request the MPC signature. ASGUARD never calls the signer contract. Unknown targets are approval-only and require HITL; optional chain adapters may add safe simulation/decoding when explicitly registered.
+There is no Solana send or simulation adapter in the active API. Non-NEAR target requests use approval-only mode and require HITL.
 
-The default registry is NEAR. The legacy Solana devnet adapter is disabled unless `ASGUARD_ENABLE_SOLANA_ADAPTER=true`; it is compatibility code, not the primary path.
+## Host verification
 
-## Policy and Anomaly Controls
-
-The existing policy model remains, including `max_auto_trade_usd`, strict anomaly detection, device/IP checks, and remote-trigger protection. NEAR-specific fields add:
-
-- `allowed_intent_types` / `denied_intent_types`
-- `allowed_assets` / `denied_assets`
-- `allowed_destinations` / `denied_destinations`
-- `allowed_intent_chains` / `denied_intent_chains`
-- `max_slippage_bps`
-- `allowed_intent_hours_utc`
-- `intent_unknown_target_requires_hitl`
-
-An empty allow-list does not mean unrestricted auto-approval: it requires HITL. Explicit deny-lists and hard limits block. USD budget evaluation uses the NEAR Intents token feed only when the price is fresh; missing or stale pricing requires HITL. Agent-declared `amount_usd` is not trusted for auto-approval.
-
-The anomaly pipeline preserves the LOW (0-39), ELEVATED (40-69), HIGH (70-89), and CRITICAL (90-100) bands, behavioral baselines, frequency checks, device/IP checks, and notifications for unresolved high-severity requests. Every control-plane event is written to the same durable HMAC-linked audit chain; no external anchoring is claimed.
+Import `withApprovedNearIntent` or `withApprovedChainSignature` from `server/approvalAttestation.ts` in a trusted host service. Pass the exact payload and expected agent, network, and domain bindings. The callback only runs after signature, expiry, payload hash, and binding checks pass. Keep signing inside that callback in the host. Never expose the signing key to browser JavaScript.
 
 ## API and MCP
 
-Runtime credentials use `ASGUARD_API_CREDENTIALS` with the existing `runtime`, `admin`, `operator`, and `auditor` roles. MCP and REST approval requests require `runtime` or `admin`; HITL decisions and policy edits are role-gated.
+REST and MCP use the same approval pipeline. Runtime credentials may request approvals and report activity. `admin` can update policy and make operator decisions; `operator` can make human decisions; `auditor` can read status, policy, intents, and audit records. Sensitive endpoints require bearer credentials. MCP approval tools include `asguard_request_near_intent_approval`, `asguard_request_chain_signature_approval`, and `asguard_get_approval_status`; read tools expose transaction status, policy, and health. REST endpoints include `/api/approvals/near-intent`, `/api/approvals/chain-signature`, `/api/transactions`, `/api/policy`, `/api/health`, and `/api/anomaly/audit-trail`.
 
-Primary MCP tools:
+## Configuration
 
-- `asguard_request_near_intent_approval`
-- `asguard_request_chain_signature_approval`
-- `asguard_get_approval_status`
-- `asguard_get_transaction_status`
-- `asguard_get_policy`
-- `asguard_get_status`
-- `asguard_report_activity`
-- `asguard_report_security_violation`
+Copy `.env.example` to `.env`, generate independent high entropy API tokens and an audit key of at least 32 bytes, and set the dashboard origin. The backend fails startup when credentials or the audit key are missing or invalid. Keep `.env` out of source control. Configure the NEAR network, HTTPS RPC, Intents token API, verifier, and Chain Signatures contract for the intended deployment. The default is NEAR testnet.
 
-REST approval endpoints are `POST /api/approvals/near-intent` and `POST /api/approvals/chain-signature`. The dashboard exposes live approvals, risk context, policy lists, transaction intents, and audit events over authenticated HTTP/WebSocket connections.
+The audit chain, policy, profiles, and transaction intents use atomic local JSON persistence by default under `~/.astrid`; audit, profile, and intent paths can be redirected with their corresponding `ASGUARD_*_PATH` variables. Back up this directory using a consistent filesystem snapshot, verify audit integrity after restore, and retain the audit key securely: without the original key, existing HMAC entries cannot be verified.
 
-## Local Development
+## Run locally
 
-1. Copy `.env.example` to `.env` and replace the credential placeholders with distinct random values. Never commit `.env` or share its contents.
-2. Start the backend with `npm run backend:start`; start the frontend with `npm run dev:frontend`.
-3. Connect the dashboard with an admin or operator API credential.
-4. Run `npm run demo:near` to request approval for a sample NEAR token-diff intent, handle HITL in the dashboard if required, and exercise the verified host callback. The demo intentionally stops before wallet signing or submission.
+```sh
+npm install
+npm run dev:backend
+npm run dev:frontend
+npm test
+npm run build
+npm run demo:near
+```
 
-The sample config defaults to NEAR testnet RPC for health checks. NEAR Intents may have different network availability; configure and verify the host integration's target network independently. `ASGUARD_NEAR_INTENTS_API_URL`, `ASGUARD_NEAR_INTENTS_VERIFIER`, and `ASGUARD_NEAR_CHAIN_SIGNATURES_CONTRACT` describe integration context only; they do not enable custody or execution.
+Set a runtime credential for `demo:near`, and an admin/operator credential to resolve HITL in the dashboard. The demo exercises request, approval, and host verification only; it stops before signing or submission. Tests use temporary paths and do not contact production services.
 
-## Storage and Limits
+## Operations
 
-Policy, the HMAC-linked audit chain, transaction intents, and agent behavior profiles are local-file backed. Transaction intents may additionally be written to Postgres when configured; profile persistence is pluggable behind an interface. The Rust/WASM capsule exports remain a prototype stub and are not the active enforcement hook. Treat ASGUARD as a control-plane prototype until the host integration is deployed and independently security reviewed.
+1. Provision credentials per service and role. Rotate credentials by overlapping old and new tokens, then remove the old token.
+2. Back up policy, profiles, intents, and audit files using filesystem snapshots that preserve permissions. Back up Postgres separately when enabled.
+3. On restore, start with the same audit key and confirm `/api/anomaly/diagnostics` reports a valid chain before allowing requests.
+4. Monitor `/api/health`, audit chain diagnostics, pending HITL age, and denied requests. A failed NEAR RPC health check is surfaced as unhealthy; approval preflight still fails closed on unavailable price data.
+5. Treat any audit integrity failure as a security incident. Preserve the original files and key for investigation; do not recreate an empty chain over them.
+
+## Scope
+
+ASGUARD is an approval and audit control plane. It is not a wallet, key custodian, signer, relayer, solver, NEAR Intents implementation, Chain Signatures MPC implementation, or chain execution simulator for NEAR. Its attestations authorize a host to proceed; they do not guarantee transaction success or replace host verification.

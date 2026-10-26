@@ -1,6 +1,6 @@
 # AOS runtime integration
 
-This folder contains the AOS-oriented runtime scaffolding for ASGUARD.
+This folder contains runtime integration code used by ASGUARD.
 
 ## Components
 - capabilityManager.ts: runtime capability gating for policy, event, HITL, and audit actions.
@@ -10,5 +10,5 @@ This folder contains the AOS-oriented runtime scaffolding for ASGUARD.
 - unicityAdapter.ts: adapter that builds a Unicity/Sphere runtime blueprint for the backend.
 
 ## Integration notes
-- The backend health and stats endpoints now expose runtimeConfig, capsule metadata, provider definitions, and the current Unicity blueprint.
+- The backend health and stats endpoints expose runtime configuration, provider definitions, and the current Unicity blueprint.
 - Provider adapters can be registered at runtime via the provider registry and can optionally expose a health probe.

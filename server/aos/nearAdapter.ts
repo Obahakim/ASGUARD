@@ -1,4 +1,4 @@
-import type { ChainHealth } from './chainAdapter';
+import type { ChainHealth } from './chainHealth';
 
 export type NearNetwork = 'mainnet' | 'testnet';
 

@@ -82,6 +82,13 @@ export interface HITLRequestEvent extends BaseEvent {
 	expires_at: string;
 }
 
+export interface TransactionPreflight {
+	status: 'passed' | 'review_required' | 'blocked';
+	kind: 'near_intent_policy_and_price' | 'approval_policy';
+	checked_at: string;
+	reasons: string[];
+}
+
 export interface AuditLogEvent extends BaseEvent {
 	type: 'audit_log';
 	agent_id?: string;
@@ -220,12 +227,6 @@ export type TransactionIntentStatus =
 	| 'expired'
 	| 'failed';
 
-export interface TransactionSimulation {
-	status: 'passed' | 'failed';
-	simulated_at?: string;
-	details?: Record<string, unknown>;
-}
-
 export interface TransactionIntent {
 	id: string;
 	idempotency_key: string;
@@ -248,6 +249,7 @@ export interface TransactionIntent {
 	expires_at: string;
 	created_at: string;
 	updated_at: string;
+	preflight?: TransactionPreflight;
 }
 
 export interface ApprovalAttestation {
@@ -264,7 +266,7 @@ export interface SignApprovalRequest {
 	device_id?: string; contract_address?: string; wallet_id?: string; idempotency_key: string;
 	payload_domain?: string; derivation_path?: string; signer_contract?: string; intent_type?: string;
 	near_intent?: Record<string, unknown>;
-	details?: Record<string, unknown>; simulation?: Record<string, unknown>;
+	details?: Record<string, unknown>;
 }
 export interface SignApprovalResponse {
 	status: 'approved' | 'pending_hitl' | 'rejected'; decision_id?: string; intent_id?: string;

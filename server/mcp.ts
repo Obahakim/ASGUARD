@@ -7,7 +7,6 @@ export interface McpServices {
   getPolicy(): AsguardPolicy;
   reportActivity(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   reportViolation(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
-  guardAndSendSolana(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   requestSignApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   requestNearIntentApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   requestChainSignatureApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
@@ -53,7 +52,6 @@ const tools = [
         wallet_id: { type: 'string' },
         idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
         details: { type: 'object' },
-        simulation: { type: 'object' },
       },
       additionalProperties: false,
     },
@@ -149,28 +147,6 @@ const tools = [
         chain: { type: 'string' },
         network: { type: 'string' },
         amount_usd: { type: 'number', minimum: 0 },
-        ip_address: { type: 'string' },
-        device_id: { type: 'string' },
-        contract_address: { type: 'string' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'asguard_guarded_solana_send',
-    description: 'Optional legacy Solana devnet compatibility flow. Disabled unless ASGUARD_ENABLE_SOLANA_ADAPTER=true; use NEAR Intent approval by default.',
-    inputSchema: {
-      type: 'object',
-      required: ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'risk_level', 'amount_usd', 'transaction_base64'],
-      properties: {
-        idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
-        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
-        agent_name: { type: 'string', minLength: 1, maxLength: 128 },
-        wallet_id: { type: 'string', minLength: 1, maxLength: 128 },
-        action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-        amount_usd: { type: 'number', minimum: 0 },
-        transaction_base64: { type: 'string', minLength: 1, maxLength: 1500000 },
         ip_address: { type: 'string' },
         device_id: { type: 'string' },
         contract_address: { type: 'string' },
@@ -291,12 +267,6 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
             return;
           }
           value = await services.reportViolation(args, req.asguardIdentity);
-        } else if (name === 'asguard_guarded_solana_send') {
-          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
-            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to request a guarded transaction.'));
-            return;
-          }
-          value = await services.guardAndSendSolana(args, req.asguardIdentity);
         } else {
           res.status(400).json(errorResponse(id, -32602, 'Unknown ASGUARD tool.'));
           return;

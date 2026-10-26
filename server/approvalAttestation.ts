@@ -22,9 +22,9 @@ function sortObject(value: unknown): unknown {
   return value;
 }
 
-export function getApprovalSigningKey(value = process.env.ASGUARD_AUDIT_KEY || process.env.ASGUARD_APPROVAL_KEY): string {
+export function getApprovalSigningKey(value = process.env.ASGUARD_AUDIT_KEY): string {
   const signingKey = value?.trim();
-  if (!signingKey) throw new Error('ASGUARD_AUDIT_KEY or ASGUARD_APPROVAL_KEY must be configured before signing approvals.');
+  if (!signingKey) throw new Error('ASGUARD_AUDIT_KEY must be configured before signing approvals.');
   if (Buffer.byteLength(signingKey, 'utf8') < 32) throw new Error('Approval signing key must contain at least 32 bytes.');
   return signingKey;
 }

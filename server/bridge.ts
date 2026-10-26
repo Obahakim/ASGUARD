@@ -344,8 +344,9 @@ export class WebSocketBridge {
    * Close all connections
    */
   public close(): void {
+    this.wss.clients.forEach((socket) => socket.terminate());
     this.clients.forEach((client) => {
-      client.ws.close();
+      client.ws.terminate();
     });
     this.clients.clear();
     this.wss.close();

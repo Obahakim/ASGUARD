@@ -152,7 +152,7 @@ export default function Home() {
             <div className="flex flex-col gap-2">
               {transactions.length === 0 ? <div className="rounded-lg border asguard-border bg-slate-800/50 p-4 text-sm text-slate-400">No transaction intents have been reported.</div> : transactions.slice(0, 30).map((intent) => (
                 <div key={intent.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border asguard-border bg-slate-800/50 p-3 text-sm">
-                  <div><p className="font-mono text-slate-200">{intent.agent_id} · {intent.action}</p><p className="mt-1 text-xs text-slate-400">{intent.network} · {intent.id}</p></div>
+                  <div><p className="font-mono text-slate-200">{intent.agent_id} · {intent.action}</p><p className="mt-1 text-xs text-slate-400">{intent.network} · {intent.id}</p>{intent.preflight && <p className={`mt-1 text-xs ${intent.preflight.status === 'passed' ? 'text-emerald-300' : intent.preflight.status === 'blocked' ? 'text-red-300' : 'text-amber-300'}`}>Preflight {intent.preflight.status.replaceAll('_', ' ')} · {intent.preflight.kind.replaceAll('_', ' ')}{intent.preflight.reasons.length ? ` · ${intent.preflight.reasons.join(', ')}` : ''}</p>}</div>
                   <span className={intent.status === 'submitted' || intent.status === 'confirmed' ? 'text-emerald-400' : intent.status === 'blocked' || intent.status === 'rejected' || intent.status === 'failed' ? 'text-red-400' : 'text-amber-300'}>{intent.status.replaceAll('_', ' ')}</span>
                 </div>
               ))}

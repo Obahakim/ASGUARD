@@ -1,4 +1,4 @@
-import type { ChainHealth } from './chainAdapter';
+import type { ChainHealth } from './chainHealth';
 import { nearAdapter, type NearAdapter } from './nearAdapter';
 
 export interface ApprovalOnlyAdapter {
@@ -8,7 +8,7 @@ export interface ApprovalOnlyAdapter {
 	health(): Promise<ChainHealth>;
 }
 
-export type RegisteredChainAdapter = NearAdapter | import('./chainAdapter').ChainAdapter;
+export type RegisteredChainAdapter = NearAdapter;
 
 export class ChainRegistry {
 	private readonly adapters = new Map<string, RegisteredChainAdapter>();

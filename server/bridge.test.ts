@@ -36,6 +36,7 @@ function rejectedStatus(url: string, protocols: string[], origin?: string): Prom
     const socket = new WebSocket(url, protocols, origin ? { origin } : undefined);
     socket.once('unexpected-response', (_request, response) => {
       response.resume();
+      socket.terminate();
       resolve(response.statusCode ?? 0);
     });
     socket.once('error', () => {});
@@ -61,13 +62,16 @@ test('requires a one-time ticket and allowlisted browser origin for WebSockets',
       ['asguard.v1', 'asguard-ticket.valid-ticket'],
       { origin: 'https://trusted.example' }
     );
+    const firstMessagePromise = once(socket, 'message');
     await once(socket, 'open');
     assert.equal(socket.protocol, 'asguard.v1');
 
-    const firstMessage = await once(socket, 'message');
+    const firstMessage = await firstMessagePromise;
     const message = JSON.parse(firstMessage[0].toString());
     assert.equal(message.payload.type, 'connection_status');
+    const closed = once(socket, 'close');
     socket.close();
+    await closed;
   } finally {
     bridge.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));

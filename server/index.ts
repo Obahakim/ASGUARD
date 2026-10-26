@@ -23,14 +23,12 @@ import {
 import { CapabilityManager, defaultCapabilities } from './aos/capabilityManager';
 import { runtimeBridge } from './aos/runtimeBridge';
 import { auditAnchor } from './aos/auditAnchor';
-import { capsuleConfig } from './aos/capsuleConfig';
 import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
 import { UnicityAdapter } from './aos/unicityAdapter';
 import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
-import { createTransactionIntent, getTransactionIntent, listTransactionIntents, recordSimulation, transitionTransactionIntent } from './transactionIntentStore';
+import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
-import { createSolanaDevnetAdapter } from './aos/chainAdapter';
 import { nearAdapter } from './aos/nearAdapter';
 import { chainRegistry } from './aos/chainRegistry';
 import {
@@ -58,9 +56,6 @@ const allowedOrigins = new Set(
 const capabilityManager = new CapabilityManager(defaultCapabilities);
 runtimeBridge.connect();
 const unicityAdapter = new UnicityAdapter();
-if (process.env.ASGUARD_ENABLE_SOLANA_ADAPTER === 'true') {
-  chainRegistry.register('solana', createSolanaDevnetAdapter());
-}
 
 // Initialize Express app
 const app = express();
@@ -198,140 +193,6 @@ async function reportMcpViolation(input: Record<string, unknown>, identity: NonN
   return { request_id: request.request_id, agent_id: event.agent_id, decision: decision.action, reason: decision.reason };
 }
 
-async function guardAndSendSolana(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
-  const solanaAdapter = chainRegistry.resolve('solana', 'devnet');
-  if (!('simulateSignedTransaction' in solanaAdapter) || !('sendSignedTransaction' in solanaAdapter)) {
-    throw new Error('Solana execution is disabled; register an optional Solana adapter explicitly.');
-  }
-  const stringFields = ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'transaction_base64'];
-  if (stringFields.some((field) => typeof input[field] !== 'string' || !(input[field] as string).trim())) {
-    throw new Error(`Required string fields: ${stringFields.join(', ')}.`);
-  }
-  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(input.idempotency_key as string)) {
-    throw new Error('idempotency_key must be 8–128 characters using letters, numbers, dot, underscore, colon, or dash.');
-  }
-  if (!['low', 'medium', 'high'].includes(String(input.risk_level)) || typeof input.amount_usd !== 'number' || !Number.isFinite(input.amount_usd) || input.amount_usd < 0) {
-    throw new Error('risk_level must be low, medium, or high and amount_usd must be a non-negative finite number.');
-  }
-  const transactionBase64 = input.transaction_base64 as string;
-  const payloadHash = crypto.createHash('sha256').update(transactionBase64, 'utf8').digest('hex');
-  let intent = createTransactionIntent({
-    idempotency_key: input.idempotency_key as string,
-    correlation_id: crypto.randomUUID(),
-    agent_id: input.agent_id as string,
-    wallet_id: input.wallet_id as string,
-    network: `${solanaAdapter.chain}:${solanaAdapter.network}`,
-    chain: solanaAdapter.chain,
-    action: input.action as string,
-    resource: typeof input.contract_address === 'string' ? input.contract_address : 'solana-transaction',
-    payload_hash: payloadHash,
-    amount: input.amount_usd,
-    policy_version: policyStore.getPolicy().version,
-    risk_level: input.risk_level as 'low' | 'medium' | 'high',
-    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-  });
-  if (intent.agent_id !== input.agent_id || intent.wallet_id !== input.wallet_id || intent.network !== `${solanaAdapter.chain}:${solanaAdapter.network}` || intent.payload_hash !== payloadHash) {
-    throw new Error('idempotency_key is already bound to a different agent, wallet, network, or transaction payload.');
-  }
-  if (intent.status !== 'created') return { intent, duplicate: true, submitted: intent.status === 'submitted' || intent.status === 'confirmed' };
-  intent = transitionTransactionIntent(intent.id, 'evaluating');
-
-  const event: AgentActivityEvent = {
-    type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
-    agent_id: intent.agent_id, agent_name: input.agent_name as string, action: intent.action,
-    risk_level: input.risk_level as AgentActivityEvent['risk_level'], chain: intent.chain, network: solanaAdapter.network, details: { chain: intent.chain, network: solanaAdapter.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
-  };
-  auditAnchor.record('guarded_transaction_requested', {
-    intent_id: intent.id, agent_id: intent.agent_id, wallet_id: intent.wallet_id,
-    network: intent.network, payload_hash: payloadHash, actor_id: identity.id,
-  });
-  const policy = policyStore.getPolicy();
-  const anomaly = await anomalyEngine.processActivity(event, {
-    amount_usd: input.amount_usd,
-    ip_address: input.ip_address as string | undefined,
-    device_id: input.device_id as string | undefined,
-    contract_address: input.contract_address as string | undefined,
-  }, policy);
-  bridge.broadcastEvent(event);
-  logger.broadcastEvent(event);
-  if (anomaly.anomaly_event) {
-    bridge.broadcastEvent(anomaly.anomaly_event);
-    logger.broadcastEvent(anomaly.anomaly_event);
-  }
-
-  const simulation = await solanaAdapter.simulateSignedTransaction(transactionBase64);
-  intent = recordSimulation(intent.id, { status: simulation.err === null ? 'passed' : 'failed', details: simulation });
-  if (simulation.err !== null) {
-    auditAnchor.record('guarded_transaction_blocked', {
-      intent_id: intent.id, reason: 'Solana simulation failed', simulation_error: simulation.err, actor_id: identity.id,
-    });
-    bridge.broadcastEvent({
-      type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
-      agent_id: intent.agent_id, action: 'Transaction blocked by Solana simulation', resource: intent.id,
-      status: 'failure', details: { simulation_error: simulation.err },
-    });
-    return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'simulation_failed' };
-  }
-
-  const budgetExceeded = input.amount_usd > policy.max_auto_trade_usd;
-  // Amounts and instruction semantics are supplied by the caller and are not yet
-  // independently decoded/valued, so every submitted devnet transaction requires
-  // explicit human approval even when the anomaly model reports a quiet pass.
-  const requiresHuman = true;
-  if (requiresHuman) {
-    const request: HITLRequestEvent = {
-      type: 'hitl_request', timestamp: new Date().toISOString(), id: `hitl_${crypto.randomUUID()}`,
-      request_id: `req_${crypto.randomUUID()}`, agent_id: intent.agent_id,
-      incident_type: budgetExceeded ? 'budget_overrun' : anomaly.evaluation.action,
-      context: {
-        intent_id: intent.id, chain: intent.network, action: intent.action, amount_usd: input.amount_usd,
-        max_auto_trade_usd: policy.max_auto_trade_usd,
-        declared_amount_is_independently_verified: false,
-        budget_exceeded: budgetExceeded, anomaly: anomaly.evaluation,
-        simulation: { err: simulation.err, logs: simulation.logs, units_consumed: simulation.unitsConsumed },
-      },
-      action_options: ['allow_once', 'allow_session', 'deny_terminate'],
-      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-    };
-    bridge.broadcastEvent(request);
-    logger.broadcastEvent(request);
-    void notifier.notifyForDecision({ agent_id: intent.agent_id, action: intent.action, amount_usd: input.amount_usd as number, request_id: request.request_id, status: 'pending_hitl', expires_at: request.expires_at, score: anomaly.evaluation.anomaly_score, rules: anomaly.evaluation.rules_triggered, requires_hitl: true }).catch(error => logger.error('[MCP] Notifier failed', { error: String(error) }));
-    let decision;
-    try {
-      decision = await hitlHandler.handleRequest(request, false);
-    } catch (error) {
-      intent = transitionTransactionIntent(intent.id, 'rejected');
-      return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'human_approval_unavailable', error: String(error) };
-    }
-    if (decision.action === 'deny_terminate') {
-      intent = transitionTransactionIntent(intent.id, 'rejected');
-      auditAnchor.record('guarded_transaction_rejected', { intent_id: intent.id, actor_id: identity.id, reason: decision.reason });
-      return { intent, submitted: false, simulation, anomaly: anomaly.evaluation, blocked_reason: 'human_rejected' };
-    }
-    intent = transitionTransactionIntent(intent.id, 'approved');
-    auditAnchor.record('guarded_transaction_approved', { intent_id: intent.id, actor_id: decision.actor_id ?? 'unknown-operator', decision: decision.action });
-  } else {
-    intent = transitionTransactionIntent(intent.id, 'approved');
-  }
-
-  intent = transitionTransactionIntent(intent.id, 'authorized');
-  try {
-    const signature = await solanaAdapter.sendSignedTransaction(transactionBase64);
-    intent = transitionTransactionIntent(intent.id, 'submitted');
-    auditAnchor.record('guarded_transaction_submitted', { intent_id: intent.id, signature, network: intent.network });
-    bridge.broadcastEvent({
-      type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
-      agent_id: intent.agent_id, action: 'Guarded Solana transaction submitted', resource: intent.id,
-      status: 'success', details: { signature, network: intent.network },
-    });
-    return { intent, submitted: true, signature, simulation, anomaly: anomaly.evaluation };
-  } catch (error) {
-    intent = transitionTransactionIntent(intent.id, 'failed');
-    auditAnchor.record('guarded_transaction_submission_failed', { intent_id: intent.id, error: String(error) });
-    throw error;
-  }
-}
-
 app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res: Response) => {
   handleMcpRequest(req, res, {
     getStatus: async () => ({
@@ -351,7 +212,6 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     requestSignApproval: async (input, identity) => ({ ...await processSignApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     requestNearIntentApproval: async (input, identity) => ({ ...await processNearIntentApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     requestChainSignatureApproval: async (input, identity) => ({ ...await processChainSignatureApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
-    guardAndSendSolana,
     getTransactionStatus: getTransactionIntent,
     getApprovalStatus: getApprovalResult,
   });
@@ -470,7 +330,6 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
     const chain = await nearAdapter.health();
     const response: HealthCheckResponse & {
       runtimeConfig: typeof runtimeConfig;
-      capsule: typeof capsuleConfig;
       providers: ReturnType<typeof providerRegistry.list>;
       unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
       chain: Awaited<ReturnType<typeof nearAdapter.health>>;
@@ -483,7 +342,6 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       runtime: runtimeName,
       capabilities: capabilityManager.list(),
       runtimeConfig,
-      capsule: capsuleConfig,
       providers: providerRegistry.list(),
       unicity: blueprint,
       chain,
@@ -591,6 +449,7 @@ app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request,
 // Reset policy to defaults
 app.post('/api/policy/reset', apiAuthenticator.requireAnyRole('admin'), (req: Request, res: Response) => {
   try {
+    const oldPolicy = structuredClone(policyStore.getPolicy());
     const policy = policyStore.reset();
     auditAnchor.record('policy_reset', {
       runtime: runtimeName,
@@ -603,8 +462,8 @@ app.post('/api/policy/reset', apiAuthenticator.requireAnyRole('admin'), (req: Re
       timestamp: new Date().toISOString(),
       id: `evt_${Date.now()}`,
       field: 'all',
-      old_value: null,
-      new_value: 'defaults',
+      old_value: oldPolicy,
+      new_value: structuredClone(policy),
     };
     bridge.broadcastEvent(event);
 
@@ -851,7 +710,6 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
       uptime_ms: process.uptime() * 1000,
-      capsule: capsuleConfig,
       providers: providerRegistry.list(),
       unicity: blueprint,
       chain,
@@ -868,7 +726,6 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
       uptime_ms: process.uptime() * 1000,
-      capsule: capsuleConfig,
       providers: providerRegistry.list(),
       chain: await nearAdapter.health(),
       near: {
