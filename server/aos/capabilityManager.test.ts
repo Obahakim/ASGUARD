@@ -9,8 +9,7 @@ test('grants and checks capabilities for the guarded runtime', () => {
   assert.equal(manager.has('policy_management'), true);
   assert.equal(manager.can('policy_management'), true);
 
-  const denied = manager.can('audit_anchoring', { requireRuntime: true });
-  assert.equal(denied, false);
+  assert.equal(manager.can('audit_integrity'), true);
 
   const allowed = manager.can('policy_management', { requireRuntime: false });
   assert.equal(allowed, true);
@@ -21,4 +20,5 @@ test('returns the default capability set', () => {
   const caps = manager.list();
   assert.ok(caps.includes('policy_management' as CapabilityName));
   assert.ok(caps.includes('event_monitoring' as CapabilityName));
+  assert.ok(caps.includes('audit_integrity' as CapabilityName));
 });

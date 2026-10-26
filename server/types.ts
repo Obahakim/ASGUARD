@@ -191,6 +191,8 @@ export interface AuditChainEntry {
 	agent_id: string;
 	action: string;
 	anomaly_score?: number;
+	event_type?: string;
+	payload?: Record<string, unknown>;
 	previous_hash: string;
 	entry_hash: string;
 	signature: string;

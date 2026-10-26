@@ -110,3 +110,24 @@ test('persists audit entries and rejects a tampered chain on reload', () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('persists structured control-plane audit events in the HMAC chain', () => {
+  const originalKey = process.env.ASGUARD_AUDIT_KEY;
+  const directory = mkdtempSync(join(tmpdir(), 'asguard-audit-event-'));
+  const chainPath = join(directory, 'audit.json');
+  process.env.ASGUARD_AUDIT_KEY = 'a-long-enough-test-audit-key-value-123456';
+
+  try {
+    const chain = new AuditChain(chainPath);
+    chain.addAuditEvent('policy_update', { id: 'event-policy-1', actor_id: 'admin-1', field: 'max_auto_trade_usd', old_value: 100, new_value: 50 });
+    const reloaded = new AuditChain(chainPath);
+    const exported = reloaded.exportChain();
+    assert.equal(exported.integrity_verified, true);
+    assert.equal(exported.entries[0].event_type, 'policy_update');
+    assert.deepEqual(exported.entries[0].payload, { id: 'event-policy-1', actor_id: 'admin-1', field: 'max_auto_trade_usd', old_value: 100, new_value: 50 });
+  } finally {
+    if (originalKey === undefined) delete process.env.ASGUARD_AUDIT_KEY;
+    else process.env.ASGUARD_AUDIT_KEY = originalKey;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -21,7 +21,7 @@ test('registers a custom provider adapter', async () => {
     name: 'Custom Adapter',
     kind: 'adapter' as const,
     description: 'Custom adapter for local experiments',
-    capabilities: ['audit_anchoring'],
+    capabilities: ['audit_integrity'],
     health: async () => ({ status: 'ok' as const, detail: 'ready' }),
   };
 
@@ -30,7 +30,7 @@ test('registers a custom provider adapter', async () => {
 
   assert.ok(selected);
   assert.equal(selected?.name, 'Custom Adapter');
-  assert.equal(selected?.capabilities?.[0], 'audit_anchoring');
+  assert.equal(selected?.capabilities?.[0], 'audit_integrity');
 
   const health = await registry.health('custom-adapter');
   assert.equal(health?.status, 'ok');

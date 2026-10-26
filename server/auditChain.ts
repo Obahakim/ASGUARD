@@ -2,6 +2,7 @@ import { AuditChainEntry } from './types';
 import { logger } from './logger';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { getAuditSigningKey } from './auditConfig';
 
@@ -17,10 +18,7 @@ export class AuditChain {
 
   constructor(chainFilePath?: string) {
     this.signingKey = getAuditSigningKey();
-    this.chainFile = chainFilePath || path.join(
-      process.env.HOME || '/tmp',
-      '.astrid/audit_chain.json'
-    );
+    this.chainFile = chainFilePath || process.env.ASGUARD_AUDIT_CHAIN_PATH || path.join(os.homedir(), '.astrid', 'audit_chain.json');
     this.loadChain();
     if (!this.verifyChainIntegrity()) {
       throw new Error('Audit chain integrity check failed during startup.');
@@ -72,15 +70,7 @@ export class AuditChain {
     };
 
     // Calculate entry hash
-    const entryData = JSON.stringify({
-      sequence: entry.sequence_number,
-      timestamp: entry.timestamp,
-      event_id: entry.event_id,
-      agent_id: entry.agent_id,
-      action: entry.action,
-      anomaly_score: entry.anomaly_score,
-      previous_hash: entry.previous_hash,
-    });
+    const entryData = this.entryData(entry);
 
     entry.entry_hash = crypto
       .createHash('sha256')
@@ -110,6 +100,69 @@ export class AuditChain {
     return entry;
   }
 
+  addAuditEvent(eventType: string, payload: Record<string, unknown>): AuditChainEntry {
+    const safePayload = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+    const eventId = typeof safePayload.id === 'string' ? safePayload.id : crypto.randomUUID();
+    const agentId = typeof safePayload.agent_id === 'string' ? safePayload.agent_id : 'system';
+    const entry = this.createEntry({
+      eventId,
+      agentId,
+      action: eventType,
+      eventType,
+      payload: safePayload,
+    });
+    return entry;
+  }
+
+  private createEntry(input: {
+    eventId: string;
+    agentId: string;
+    action: string;
+    anomalyScore?: number;
+    eventType?: string;
+    payload?: Record<string, unknown>;
+  }): AuditChainEntry {
+    const previousHash = this.chain.length > 0 ? this.chain[this.chain.length - 1].entry_hash : 'genesis';
+    const entry: AuditChainEntry = {
+      sequence_number: this.sequenceNumber++,
+      timestamp: new Date().toISOString(),
+      event_id: input.eventId,
+      agent_id: input.agentId,
+      action: input.action,
+      anomaly_score: input.anomalyScore,
+      event_type: input.eventType,
+      payload: input.payload,
+      previous_hash: previousHash,
+      entry_hash: '',
+      signature: '',
+    };
+    entry.entry_hash = crypto.createHash('sha256').update(this.entryData(entry)).digest('hex');
+    entry.signature = crypto.createHmac('sha256', this.signingKey).update(`${entry.entry_hash}${entry.previous_hash}`).digest('hex');
+    this.chain.push(entry);
+    try {
+      this.persistChain();
+    } catch (error) {
+      this.chain.pop();
+      this.sequenceNumber -= 1;
+      throw error;
+    }
+    return entry;
+  }
+
+  private entryData(entry: AuditChainEntry): string {
+    return JSON.stringify({
+      sequence: entry.sequence_number,
+      timestamp: entry.timestamp,
+      event_id: entry.event_id,
+      agent_id: entry.agent_id,
+      action: entry.action,
+      anomaly_score: entry.anomaly_score,
+      previous_hash: entry.previous_hash,
+      event_type: entry.event_type,
+      payload: entry.payload,
+    });
+  }
+
   /**
    * Verify chain integrity (tamper detection)
    */
@@ -129,15 +182,7 @@ export class AuditChain {
       }
 
       // Verify HMAC signature
-      const entryData = JSON.stringify({
-        sequence: entry.sequence_number,
-        timestamp: entry.timestamp,
-        event_id: entry.event_id,
-        agent_id: entry.agent_id,
-        action: entry.action,
-        anomaly_score: entry.anomaly_score,
-        previous_hash: entry.previous_hash,
-      });
+      const entryData = this.entryData(entry);
 
       const expectedHash = crypto
         .createHash('sha256')
@@ -208,7 +253,7 @@ export class AuditChain {
    */
   exportChain(): { entries: AuditChainEntry[]; integrity_verified: boolean } {
     return {
-      entries: this.chain,
+      entries: structuredClone(this.chain),
       integrity_verified: this.verifyChainIntegrity(),
     };
   }
@@ -219,7 +264,7 @@ export class AuditChain {
   private persistChain(): void {
     const chainDir = path.dirname(this.chainFile);
     if (!fs.existsSync(chainDir)) {
-      fs.mkdirSync(chainDir, { recursive: true });
+      fs.mkdirSync(chainDir, { recursive: true, mode: 0o700 });
     }
 
     const temporaryPath = `${this.chainFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -231,7 +276,7 @@ export class AuditChain {
           sequence: this.sequenceNumber,
           last_updated: new Date().toISOString(),
         }, null, 2),
-        'utf-8'
+        { encoding: 'utf-8', mode: 0o600 }
       );
       fs.renameSync(temporaryPath, this.chainFile);
     } catch (error) {
@@ -243,12 +288,11 @@ export class AuditChain {
     }
   }
 
-  /**
-   * Clear chain (for testing only)
-   */
-  clearChain(): void {
-    this.chain = [];
-    this.sequenceNumber = 0;
-    logger.warn('[AuditChain] Chain cleared');
-  }
+}
+
+let sharedAuditChain: AuditChain | undefined;
+
+export function getSharedAuditChain(): AuditChain {
+  sharedAuditChain ??= new AuditChain();
+  return sharedAuditChain;
 }

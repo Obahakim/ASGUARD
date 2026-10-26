@@ -4,6 +4,7 @@
  */
 
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import { AsguardPolicy } from './types';
 
@@ -13,10 +14,41 @@ const MUTABLE_FIELDS = new Set<keyof AsguardPolicy>([
   'allowed_destinations', 'denied_destinations', 'allowed_intent_chains', 'denied_intent_chains',
   'max_slippage_bps', 'allowed_intent_hours_utc', 'intent_unknown_target_requires_hitl',
 ]);
+const POLICY_FIELDS = new Set<string>([...MUTABLE_FIELDS, 'updated_at', 'version']);
 
 function nextPolicyVersion(version: string | undefined): string {
   const match = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
   return match ? `${match[1]}.${match[2]}.${Number(match[3]) + 1}` : `policy-${Date.now()}`;
+}
+
+function validatePersistedPolicy(value: unknown): asserts value is AsguardPolicy {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Policy file must contain a JSON object.');
+  const policy = value as Record<string, unknown>;
+  if (Object.keys(policy).some(field => !POLICY_FIELDS.has(field))) throw new Error('Policy file contains an unknown field.');
+  if (typeof policy.max_auto_trade_usd !== 'number' || !Number.isFinite(policy.max_auto_trade_usd) || policy.max_auto_trade_usd < 0
+    || typeof policy.strict_anomaly_detection !== 'boolean'
+    || typeof policy.device_ip_lock !== 'boolean'
+    || typeof policy.remote_trigger_protection !== 'boolean'
+    || !['ollama', 'claude', 'groq'].includes(String(policy.active_llm_engine))
+    || typeof policy.max_slippage_bps !== 'number' || !Number.isInteger(policy.max_slippage_bps) || policy.max_slippage_bps < 0 || policy.max_slippage_bps > 10_000
+    || typeof policy.intent_unknown_target_requires_hitl !== 'boolean'
+    || (policy.updated_at !== undefined && (typeof policy.updated_at !== 'string' || !Number.isFinite(Date.parse(policy.updated_at))))
+    || (policy.version !== undefined && (typeof policy.version !== 'string' || !policy.version.trim()))) {
+    throw new Error('Policy file contains invalid field values.');
+  }
+  for (const field of [
+    'allowed_intent_types', 'denied_intent_types', 'allowed_assets', 'denied_assets',
+    'allowed_destinations', 'denied_destinations', 'allowed_intent_chains', 'denied_intent_chains',
+  ]) {
+    const entries = policy[field];
+    if (!Array.isArray(entries) || !entries.every(item => typeof item === 'string' && item.trim() === item && item.length > 0)) {
+      throw new Error(`Policy field ${field} must be an array of non-empty strings.`);
+    }
+  }
+  if (!Array.isArray(policy.allowed_intent_hours_utc)
+    || !policy.allowed_intent_hours_utc.every(hour => Number.isInteger(hour) && hour >= 0 && hour <= 23)) {
+    throw new Error('Policy field allowed_intent_hours_utc must contain UTC hours from 0 to 23.');
+  }
 }
 
 export class PolicyStore {
@@ -33,15 +65,8 @@ export class PolicyStore {
     // Initialize with default policy
     this.policy = this.getDefaultPolicy();
 
-    // Load existing policy if available
-    try {
-      this.load();
-    } catch (error) {
-      console.error('[PolicyStore] Failed to load policy, using defaults:', error);
-      // Create directory and file with defaults
-      this.ensureDirectory();
-      this.save();
-    }
+    if (fs.existsSync(this.policyPath)) this.load();
+    else this.save();
   }
 
   /**
@@ -76,7 +101,7 @@ export class PolicyStore {
   private ensureDirectory(): void {
     const astridDir = path.dirname(this.policyPath);
     if (!fs.existsSync(astridDir)) {
-      fs.mkdirSync(astridDir, { recursive: true });
+      fs.mkdirSync(astridDir, { recursive: true, mode: 0o700 });
       console.log(`[PolicyStore] Created directory: ${astridDir}`);
     }
   }
@@ -92,15 +117,28 @@ export class PolicyStore {
       }
 
       const fileContent = fs.readFileSync(this.policyPath, 'utf-8');
-      const loaded = JSON.parse(fileContent) as AsguardPolicy;
+      const loaded: unknown = JSON.parse(fileContent);
+      if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)) throw new Error('Policy file must contain a JSON object.');
+      const persisted = loaded as Record<string, unknown>;
+      for (const retiredField of ['high_risk_bins', 'blocked_instrument_fingerprints']) {
+        if (Object.prototype.hasOwnProperty.call(persisted, retiredField)) {
+          if (!Array.isArray(persisted[retiredField])) throw new Error(`Retired policy field ${retiredField} must be reviewed manually.`);
+          if ((persisted[retiredField] as unknown[]).length > 0) {
+            throw new Error(`Retired policy field ${retiredField} contains active restrictions that require manual migration.`);
+          }
+          delete persisted[retiredField];
+        }
+      }
 
       // Validate and merge with defaults to handle missing fields
-      this.policy = {
+      const merged = {
         ...this.getDefaultPolicy(),
-        ...loaded,
-        updated_at: loaded.updated_at || new Date().toISOString(),
-        version: loaded.version || '1.0.0',
+        ...persisted,
+        updated_at: persisted.updated_at || new Date().toISOString(),
+        version: persisted.version || '1.0.0',
       };
+      validatePersistedPolicy(merged);
+      this.policy = merged;
 
       console.log(`[PolicyStore] Loaded policy from ${this.policyPath}`);
     } catch (error) {
@@ -116,12 +154,14 @@ export class PolicyStore {
     try {
       this.ensureDirectory();
       this.policy.updated_at = new Date().toISOString();
-
-      fs.writeFileSync(
-        this.policyPath,
-        JSON.stringify(this.policy, null, 2),
-        'utf-8'
-      );
+      const temporaryPath = `${this.policyPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        fs.writeFileSync(temporaryPath, JSON.stringify(this.policy, null, 2), { encoding: 'utf-8', mode: 0o600 });
+        fs.renameSync(temporaryPath, this.policyPath);
+      } catch (error) {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+        throw error;
+      }
 
       console.log(`[PolicyStore] Saved policy to ${this.policyPath}`);
       this.notifyWatchers();

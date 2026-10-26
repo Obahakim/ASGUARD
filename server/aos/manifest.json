@@ -8,7 +8,7 @@
     "policy_management",
     "event_monitoring",
     "hitl_approval",
-    "audit_anchoring"
+    "audit_integrity"
   ],
   "runtime": {
     "engine": "astrid",

@@ -2,7 +2,7 @@ import { AgentActivityEvent, EvaluationResult, AsguardPolicy, AnomalyDetectionEv
 import { ProfileManager } from './profileManager';
 import { Evaluator } from './evaluator';
 import contractValidator from './contractValidator';
-import { AuditChain } from './auditChain';
+import { AuditChain, getSharedAuditChain } from './auditChain';
 import { logger } from './logger';
 
 /**
@@ -14,10 +14,10 @@ export class AnomalyEngine {
   private evaluator: Evaluator;
   private auditChain: AuditChain;
 
-  constructor() {
+  constructor(auditChain: AuditChain = getSharedAuditChain()) {
     this.profileManager = new ProfileManager();
     this.evaluator = new Evaluator(this.profileManager, contractValidator);
-    this.auditChain = new AuditChain();
+    this.auditChain = auditChain;
   }
 
   /**

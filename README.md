@@ -39,7 +39,7 @@ The existing policy model remains, including `max_auto_trade_usd`, strict anomal
 
 An empty allow-list does not mean unrestricted auto-approval: it requires HITL. Explicit deny-lists and hard limits block. USD budget evaluation uses the NEAR Intents token feed only when the price is fresh; missing or stale pricing requires HITL. Agent-declared `amount_usd` is not trusted for auto-approval.
 
-The anomaly pipeline preserves the LOW (0-39), ELEVATED (40-69), HIGH (70-89), and CRITICAL (90-100) bands, behavioral baselines, frequency checks, device/IP checks, and notifications for unresolved high-severity requests.
+The anomaly pipeline preserves the LOW (0-39), ELEVATED (40-69), HIGH (70-89), and CRITICAL (90-100) bands, behavioral baselines, frequency checks, device/IP checks, and notifications for unresolved high-severity requests. Every control-plane event is written to the same durable HMAC-linked audit chain; no external anchoring is claimed.
 
 ## API and MCP
 

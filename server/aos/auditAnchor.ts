@@ -1,39 +1,19 @@
-export interface AuditRecord {
-  id: string;
-  timestamp: string;
-  eventType: string;
-  payload: Record<string, unknown>;
-  localOnly: boolean;
-  anchored: boolean;
-}
+import type { AuditChainEntry } from '../types';
+import { getSharedAuditChain, type AuditChain } from '../auditChain';
 
 export class AuditAnchor {
-  private records: AuditRecord[] = [];
+  constructor(private readonly chain?: AuditChain) {}
 
-  record(eventType: string, payload: Record<string, unknown>, localOnly = true): AuditRecord {
-    const record: AuditRecord = {
-      id: `audit_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      eventType,
-      payload,
-      localOnly,
-      anchored: false,
-    };
-
-    this.records.push(record);
-    return record;
+  record(eventType: string, payload: Record<string, unknown>): AuditChainEntry {
+    return this.getChain().addAuditEvent(eventType, payload);
   }
 
-  exportLocal(): AuditRecord[] {
-    return this.records.map((record) => ({ ...record }));
+  export(): { entries: AuditChainEntry[]; integrity_verified: boolean } {
+    return this.getChain().exportChain();
   }
 
-  anchor(record: AuditRecord): AuditRecord {
-    return {
-      ...record,
-      anchored: true,
-      localOnly: false,
-    };
+  private getChain(): AuditChain {
+    return this.chain ?? getSharedAuditChain();
   }
 }
 

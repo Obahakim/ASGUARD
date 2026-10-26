@@ -56,7 +56,6 @@ const allowedOrigins = new Set(
 );
 
 const capabilityManager = new CapabilityManager(defaultCapabilities);
-capabilityManager.grant('audit_anchoring');
 runtimeBridge.connect();
 const unicityAdapter = new UnicityAdapter();
 if (process.env.ASGUARD_ENABLE_SOLANA_ADAPTER === 'true') {
@@ -551,6 +550,7 @@ app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request,
       return;
     }
 
+    const oldValue = policyStore.getPolicy()[field];
     const updatedPolicy = policyStore.updateField(field, value);
 
     // Broadcast policy update event
@@ -559,7 +559,7 @@ app.post('/api/policy', apiAuthenticator.requireAnyRole('admin'), (req: Request,
       timestamp: new Date().toISOString(),
       id: `evt_${Date.now()}`,
       field,
-      old_value: null, // TODO: Track old value in policyStore
+      old_value: structuredClone(oldValue),
       new_value: value,
     };
     auditAnchor.record('policy_update', {

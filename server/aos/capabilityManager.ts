@@ -2,7 +2,7 @@ export type CapabilityName =
   | 'policy_management'
   | 'event_monitoring'
   | 'hitl_approval'
-  | 'audit_anchoring';
+  | 'audit_integrity';
 
 export interface CapabilityCheckOptions {
   requireRuntime?: boolean;
@@ -49,4 +49,5 @@ export const defaultCapabilities: CapabilityName[] = [
   'policy_management',
   'event_monitoring',
   'hitl_approval',
+  'audit_integrity',
 ];
