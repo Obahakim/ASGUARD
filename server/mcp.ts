@@ -1,4 +1,3 @@
-import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { ApiIdentity } from './auth';
 import type { AsguardPolicy } from './types';
@@ -10,6 +9,8 @@ export interface McpServices {
   reportViolation(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   guardAndSendSolana(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   requestSignApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
+  requestNearIntentApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
+  requestChainSignatureApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   getTransactionStatus(id: string): unknown;
   getApprovalStatus(id: string): unknown;
 }
@@ -38,8 +39,11 @@ const tools = [
         agent_id: { type: 'string', minLength: 1, maxLength: 128 },
         agent_name: { type: 'string', minLength: 1, maxLength: 128 },
         action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
+        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
         payload_hash: { type: 'string', minLength: 1, maxLength: 256 },
+        payload_domain: { type: 'string', maxLength: 128 },
+        derivation_path: { type: 'string', maxLength: 128 },
+        intent_type: { type: 'string', maxLength: 64 },
         network: { type: 'string', minLength: 1, maxLength: 128 },
         chain: { type: 'string', minLength: 1, maxLength: 64 },
         amount_usd: { type: 'number', minimum: 0 },
@@ -50,6 +54,72 @@ const tools = [
         idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
         details: { type: 'object' },
         simulation: { type: 'object' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'asguard_request_near_intent_approval',
+    description: 'Evaluate a canonical NEAR Intent against policy and anomaly rules; return a short-lived attestation, pending human approval, or a denial. ASGUARD never signs or submits the intent.',
+    inputSchema: {
+      type: 'object',
+      required: ['agent_id', 'agent_name', 'risk_level', 'idempotency_key', 'near_intent'],
+      properties: {
+        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
+        agent_name: { type: 'string', minLength: 1, maxLength: 128 },
+        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+        idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
+        near_intent: {
+          type: 'object',
+          properties: {
+            standard: { type: 'string', maxLength: 32 },
+            payload: { type: 'object' },
+            intent_type: { type: 'string', minLength: 1, maxLength: 64 },
+            origin_asset: { type: 'string', minLength: 1, maxLength: 256 },
+            destination_asset: { type: 'string', minLength: 1, maxLength: 256 },
+            amount: { type: 'string', pattern: '^[0-9]+$' },
+            min_output_amount: { type: 'string', pattern: '^[0-9]+$' },
+            recipient: { type: 'string', maxLength: 256 },
+            destination_chain: { type: 'string', maxLength: 64 },
+            deadline: { type: 'string', format: 'date-time' },
+            max_slippage_bps: { type: 'integer', minimum: 0, maximum: 10000 },
+            amount_usd: { type: 'number', minimum: 0 },
+            quote_id: { type: 'string', maxLength: 256 },
+            extensions: { type: 'object' },
+          },
+          anyOf: [
+            { required: ['intent_type', 'origin_asset', 'destination_asset', 'amount'] },
+            { required: ['standard', 'payload'] },
+          ],
+          additionalProperties: false,
+        },
+        ip_address: { type: 'string' },
+        device_id: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'asguard_request_chain_signature_approval',
+    description: 'Evaluate a foreign-chain payload before its host requests a NEAR Chain Signature; the attestation binds payload hash, target network, and derivation path. ASGUARD never requests the MPC signature.',
+    inputSchema: {
+      type: 'object',
+      required: ['agent_id', 'agent_name', 'action', 'risk_level', 'payload_hash', 'network', 'chain', 'derivation_path', 'idempotency_key'],
+      properties: {
+        agent_id: { type: 'string', minLength: 1, maxLength: 128 },
+        agent_name: { type: 'string', minLength: 1, maxLength: 128 },
+        action: { type: 'string', minLength: 1, maxLength: 512 },
+        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+        payload_hash: { type: 'string', pattern: '^[A-Fa-f0-9]{64}$' },
+        network: { type: 'string', minLength: 1, maxLength: 128 },
+        chain: { type: 'string', minLength: 1, maxLength: 64 },
+        derivation_path: { type: 'string', minLength: 1, maxLength: 128 },
+        amount_usd: { type: 'number', minimum: 0 },
+        wallet_id: { type: 'string', maxLength: 128 },
+        ip_address: { type: 'string' },
+        device_id: { type: 'string' },
+        idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
+        details: { type: 'object' },
       },
       additionalProperties: false,
     },
@@ -74,7 +144,7 @@ const tools = [
         agent_id: { type: 'string', minLength: 1, maxLength: 128 },
         agent_name: { type: 'string', minLength: 1, maxLength: 128 },
         action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
+        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
         details: { type: 'object' },
         chain: { type: 'string' },
         network: { type: 'string' },
@@ -88,7 +158,7 @@ const tools = [
   },
   {
     name: 'asguard_guarded_solana_send',
-    description: 'Evaluate a signed Solana transaction against ASGUARD policy, simulate it, and submit only after approval.',
+    description: 'Optional legacy Solana devnet compatibility flow. Disabled unless ASGUARD_ENABLE_SOLANA_ADAPTER=true; use NEAR Intent approval by default.',
     inputSchema: {
       type: 'object',
       required: ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'risk_level', 'amount_usd', 'transaction_base64'],
@@ -98,7 +168,7 @@ const tools = [
         agent_name: { type: 'string', minLength: 1, maxLength: 128 },
         wallet_id: { type: 'string', minLength: 1, maxLength: 128 },
         action: { type: 'string', minLength: 1, maxLength: 512 },
-        risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
+        risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
         amount_usd: { type: 'number', minimum: 0 },
         transaction_base64: { type: 'string', minLength: 1, maxLength: 1500000 },
         ip_address: { type: 'string' },
@@ -179,6 +249,18 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
             return;
           }
           value = await services.requestSignApproval(args, req.asguardIdentity);
+        } else if (name === 'asguard_request_near_intent_approval') {
+          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to request NEAR Intent approval.'));
+            return;
+          }
+          value = await services.requestNearIntentApproval(args, req.asguardIdentity);
+        } else if (name === 'asguard_request_chain_signature_approval') {
+          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to request Chain Signatures approval.'));
+            return;
+          }
+          value = await services.requestChainSignatureApproval(args, req.asguardIdentity);
         } else if (name === 'asguard_get_transaction_status') {
           if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin', 'operator', 'auditor'].includes(role))) {
             res.status(403).json(errorResponse(id, -32003, 'Insufficient role to read transaction status.'));
@@ -232,4 +314,6 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
   })();
 }
 
-export default { handleMcpRequest };
+const mcp = { handleMcpRequest };
+
+export default mcp;

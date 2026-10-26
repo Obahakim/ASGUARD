@@ -1,7 +1,11 @@
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import type { ApprovalAttestation, SignApprovalRequest } from './types';
+import { normalizeNearIntent } from './aos/nearIntent';
 
-export const DEFAULT_APPROVAL_TTL_MS = Number(process.env.ASGUARD_APPROVAL_TTL_MS || 120000);
+const configuredTtl = Number(process.env.ASGUARD_APPROVAL_TTL_MS || 120000);
+export const DEFAULT_APPROVAL_TTL_MS = Number.isInteger(configuredTtl) && configuredTtl >= 1_000 && configuredTtl <= 600_000
+  ? configuredTtl
+  : 120_000;
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(sortObject(value));
@@ -31,6 +35,10 @@ export function buildApprovalPayload(params: {
   agent_id: string;
   network: string;
   chain?: string;
+  payload_domain?: string;
+  derivation_path?: string;
+  signer_contract?: string;
+  intent_type?: string;
   payload_hash: string;
   action: 'approve_once' | 'approve_session';
   max_amount_usd?: number;
@@ -46,6 +54,10 @@ export function buildApprovalPayload(params: {
     agent_id: params.agent_id,
     network: params.network,
     chain: params.chain,
+    payload_domain: params.payload_domain,
+    derivation_path: params.derivation_path,
+    signer_contract: params.signer_contract,
+    intent_type: params.intent_type,
     payload_hash: params.payload_hash,
     action: params.action,
     max_amount_usd: params.max_amount_usd,
@@ -67,6 +79,10 @@ export function issueApprovalAttestation(input: {
   agent_id: string;
   network: string;
   chain?: string;
+  payload_domain?: string;
+  derivation_path?: string;
+  signer_contract?: string;
+  intent_type?: string;
   payload_hash: string;
   action: 'approve_once' | 'approve_session';
   max_amount_usd?: number;
@@ -84,6 +100,10 @@ export function issueApprovalAttestation(input: {
     agent_id: input.agent_id,
     network: input.network,
     chain: input.chain,
+    payload_domain: input.payload_domain,
+    derivation_path: input.derivation_path,
+    signer_contract: input.signer_contract,
+    intent_type: input.intent_type,
     payload_hash: input.payload_hash,
     action: input.action,
     max_amount_usd: input.max_amount_usd,
@@ -101,12 +121,18 @@ export function issueApprovalAttestation(input: {
 }
 
 export function verifyApprovalAttestation(
-  attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'network' | 'chain' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
+  attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'network' | 'chain' | 'payload_domain' | 'derivation_path' | 'signer_contract' | 'intent_type' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
   opts?: {
     signingKey?: string;
     bytesToSign?: Uint8Array | string;
     expectedAgentId?: string;
     expectedPayloadHash?: string;
+    expectedPayloadDomain?: string;
+    expectedDerivationPath?: string;
+    expectedIntentType?: string;
+    expectedNetwork?: string;
+    expectedChain?: string;
+    expectedSignerContract?: string;
     maxAmountUsd?: number;
     now?: Date;
   }
@@ -119,6 +145,10 @@ export function verifyApprovalAttestation(
     agent_id: attestation.agent_id,
     network: attestation.network,
     chain: attestation.chain,
+    payload_domain: attestation.payload_domain,
+    derivation_path: attestation.derivation_path,
+    signer_contract: attestation.signer_contract,
+    intent_type: attestation.intent_type,
     payload_hash: attestation.payload_hash,
     action: attestation.action,
     max_amount_usd: attestation.max_amount_usd,
@@ -130,11 +160,16 @@ export function verifyApprovalAttestation(
   });
 
   const expectedSignature = signApprovalPayload(payload, signingKey);
-  if (!timingSafeEqual(Buffer.from(attestation.signature, 'hex'), Buffer.from(expectedSignature, 'hex'))) {
+  const actualSignature = Buffer.from(attestation.signature, 'hex');
+  const expectedSignatureBytes = Buffer.from(expectedSignature, 'hex');
+  if (actualSignature.length !== expectedSignatureBytes.length || !timingSafeEqual(actualSignature, expectedSignatureBytes)) {
     return { valid: false, reason: 'signature_mismatch' };
   }
 
-  if (new Date(attestation.expires_at).getTime() <= now.getTime()) {
+  const issuedAt = Date.parse(attestation.issued_at);
+  const expiresAt = Date.parse(attestation.expires_at);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt > now.getTime() || expiresAt <= now.getTime()
+    || expiresAt <= issuedAt || expiresAt - issuedAt > DEFAULT_APPROVAL_TTL_MS) {
     return { valid: false, reason: 'expired' };
   }
 
@@ -144,6 +179,24 @@ export function verifyApprovalAttestation(
 
   if (opts?.expectedPayloadHash && opts.expectedPayloadHash !== attestation.payload_hash) {
     return { valid: false, reason: 'payload_hash_mismatch' };
+  }
+  if (opts?.expectedPayloadDomain && opts.expectedPayloadDomain !== attestation.payload_domain) {
+    return { valid: false, reason: 'payload_domain_mismatch' };
+  }
+  if (opts?.expectedDerivationPath && opts.expectedDerivationPath !== attestation.derivation_path) {
+    return { valid: false, reason: 'derivation_path_mismatch' };
+  }
+  if (opts?.expectedIntentType && opts.expectedIntentType !== attestation.intent_type) {
+    return { valid: false, reason: 'intent_type_mismatch' };
+  }
+  if (opts?.expectedNetwork && opts.expectedNetwork !== attestation.network) {
+    return { valid: false, reason: 'network_mismatch' };
+  }
+  if (opts?.expectedChain && opts.expectedChain !== attestation.chain) {
+    return { valid: false, reason: 'chain_mismatch' };
+  }
+  if (opts?.expectedSignerContract && opts.expectedSignerContract !== attestation.signer_contract) {
+    return { valid: false, reason: 'signer_contract_mismatch' };
   }
 
   if (typeof opts?.bytesToSign !== 'undefined') {
@@ -155,8 +208,9 @@ export function verifyApprovalAttestation(
     }
   }
 
-  if (typeof opts?.maxAmountUsd === 'number' && typeof attestation.max_amount_usd === 'number' && opts.maxAmountUsd > attestation.max_amount_usd) {
-    return { valid: false, reason: 'amount_exceeds_attestation_limit' };
+  if (typeof opts?.maxAmountUsd === 'number') {
+    if (typeof attestation.max_amount_usd !== 'number') return { valid: false, reason: 'attested_amount_limit_missing' };
+    if (opts.maxAmountUsd > attestation.max_amount_usd) return { valid: false, reason: 'amount_exceeds_attestation_limit' };
   }
 
   return { valid: true };
@@ -169,6 +223,12 @@ export function assertApprovedThenSign(
     signingKey?: string;
     expectedAgentId?: string;
     expectedPayloadHash?: string;
+    expectedPayloadDomain?: string;
+    expectedDerivationPath?: string;
+    expectedIntentType?: string;
+    expectedNetwork?: string;
+    expectedChain?: string;
+    expectedSignerContract?: string;
     maxAmountUsd?: number;
     now?: Date;
   } = {}
@@ -178,6 +238,12 @@ export function assertApprovedThenSign(
     bytesToSign,
     expectedAgentId: publicVerifyParams.expectedAgentId,
     expectedPayloadHash: publicVerifyParams.expectedPayloadHash,
+    expectedPayloadDomain: publicVerifyParams.expectedPayloadDomain,
+    expectedDerivationPath: publicVerifyParams.expectedDerivationPath,
+    expectedIntentType: publicVerifyParams.expectedIntentType,
+    expectedNetwork: publicVerifyParams.expectedNetwork,
+    expectedChain: publicVerifyParams.expectedChain,
+    expectedSignerContract: publicVerifyParams.expectedSignerContract,
     maxAmountUsd: publicVerifyParams.maxAmountUsd,
     now: publicVerifyParams.now,
   });
@@ -185,12 +251,121 @@ export function assertApprovedThenSign(
   return true;
 }
 
+export function assertApprovedThenSignIntent(
+  intentInput: unknown,
+  attestation: ApprovalAttestation,
+  publicVerifyParams: {
+    signingKey?: string;
+    expectedAgentId?: string;
+    expectedNetwork: string;
+    expectedVerifier: string;
+    now?: Date;
+  }
+): true {
+  const normalized = normalizeNearIntent(intentInput, (publicVerifyParams.now ?? new Date()).getTime(), publicVerifyParams.expectedVerifier);
+  const verification = verifyApprovalAttestation(attestation, {
+    signingKey: publicVerifyParams.signingKey,
+    bytesToSign: normalized.canonicalBytes,
+    expectedAgentId: publicVerifyParams.expectedAgentId,
+    expectedPayloadHash: normalized.payloadHash,
+    expectedPayloadDomain: 'near-intent',
+    expectedIntentType: normalized.intent.intent_type,
+    expectedNetwork: publicVerifyParams.expectedNetwork,
+    expectedChain: 'near',
+    now: publicVerifyParams.now,
+  });
+  if (!verification.valid) throw new Error(`ASGUARD intent attestation rejected: ${verification.reason ?? 'invalid'}`);
+  return true;
+}
+
+export async function withApprovedNearIntent<T>(
+  intentInput: unknown,
+  attestation: ApprovalAttestation,
+  params: {
+    signingKey?: string;
+    expectedAgentId: string;
+    expectedNetwork: string;
+    expectedVerifier: string;
+    now?: Date;
+  },
+  signOrSubmit: (
+    canonicalIntentBytes: string,
+    intent: ReturnType<typeof normalizeNearIntent>['intent'],
+    originalIntentPayload: unknown
+  ) => Promise<T>
+): Promise<T> {
+  const normalized = normalizeNearIntent(intentInput, (params.now ?? new Date()).getTime(), params.expectedVerifier);
+  const verification = verifyApprovalAttestation(attestation, {
+    signingKey: params.signingKey,
+    bytesToSign: normalized.canonicalBytes,
+    expectedAgentId: params.expectedAgentId,
+    expectedPayloadHash: normalized.payloadHash,
+    expectedPayloadDomain: 'near-intent',
+    expectedIntentType: normalized.intent.intent_type,
+    expectedNetwork: params.expectedNetwork,
+    expectedChain: 'near',
+    now: params.now,
+  });
+  if (!verification.valid) throw new Error(`ASGUARD intent attestation rejected: ${verification.reason ?? 'invalid'}`);
+  return signOrSubmit(normalized.canonicalBytes, normalized.intent, intentInput);
+}
+
+export function assertApprovedThenSignChainPayload(
+  payload: Uint8Array | string,
+  attestation: ApprovalAttestation,
+  params: {
+    derivationPath: string;
+    payloadDomain: string;
+    expectedNetwork: string;
+    expectedChain: string;
+    signerContract: string;
+    signingKey?: string;
+    expectedAgentId?: string;
+    maxAmountUsd?: number;
+    now?: Date;
+  }
+): true {
+  const verification = verifyApprovalAttestation(attestation, {
+    signingKey: params.signingKey,
+    bytesToSign: payload,
+    expectedAgentId: params.expectedAgentId,
+    expectedPayloadDomain: params.payloadDomain,
+    expectedDerivationPath: params.derivationPath,
+    expectedNetwork: params.expectedNetwork,
+    expectedChain: params.expectedChain,
+    expectedSignerContract: params.signerContract,
+    maxAmountUsd: params.maxAmountUsd,
+    now: params.now,
+  });
+  if (!verification.valid) throw new Error(`ASGUARD chain-signature attestation rejected: ${verification.reason ?? 'invalid'}`);
+  return true;
+}
+
+export async function withApprovedChainSignature<T>(
+  payload: Uint8Array | string,
+  attestation: ApprovalAttestation,
+  params: {
+    derivationPath: string;
+    payloadDomain: string;
+    expectedNetwork: string;
+    expectedChain: string;
+    signerContract: string;
+    signingKey?: string;
+    expectedAgentId: string;
+    now?: Date;
+  },
+  requestSignature: (approvedPayload: Uint8Array | string) => Promise<T>
+): Promise<T> {
+  assertApprovedThenSignChainPayload(payload, attestation, params);
+  return requestSignature(payload);
+}
+
 export function validateApprovalRequest(input: Partial<SignApprovalRequest>): void {
   if ([input.agent_id, input.agent_name, input.action, input.payload_hash, input.network, input.idempotency_key].some(value => typeof value !== 'string' || !value.trim())) {
     throw new Error('agent_id, agent_name, action, payload_hash, network, and idempotency_key are required.');
   }
-  if (!['low', 'medium', 'high'].includes(String(input.risk_level ?? ''))) {
-    throw new Error('risk_level must be low, medium, or high.');
+  if (!['low', 'medium', 'high', 'critical'].includes(String(input.risk_level ?? ''))) {
+    throw new Error('risk_level must be low, medium, high, or critical.');
   }
   if (input.amount_usd !== undefined && (!Number.isFinite(input.amount_usd) || input.amount_usd < 0)) {
     throw new Error('amount_usd must be a non-negative finite number.');
@@ -206,7 +381,7 @@ export function validateApprovalRequest(input: Partial<SignApprovalRequest>): vo
   }
 }
 
-export default {
+const approvalAttestation = {
   DEFAULT_APPROVAL_TTL_MS,
   getApprovalSigningKey,
   buildApprovalPayload,
@@ -214,5 +389,11 @@ export default {
   issueApprovalAttestation,
   verifyApprovalAttestation,
   assertApprovedThenSign,
+  assertApprovedThenSignIntent,
+  assertApprovedThenSignChainPayload,
+  withApprovedNearIntent,
+  withApprovedChainSignature,
   validateApprovalRequest,
 };
+
+export default approvalAttestation;

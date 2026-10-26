@@ -10,7 +10,32 @@ pub struct AsguardPolicy {
     pub device_ip_lock: bool,
     pub remote_trigger_protection: bool,
     pub active_llm_engine: String,
+    #[serde(default)]
+    pub allowed_intent_types: Vec<String>,
+    #[serde(default)]
+    pub denied_intent_types: Vec<String>,
+    #[serde(default)]
+    pub allowed_assets: Vec<String>,
+    #[serde(default)]
+    pub denied_assets: Vec<String>,
+    #[serde(default)]
+    pub allowed_destinations: Vec<String>,
+    #[serde(default)]
+    pub denied_destinations: Vec<String>,
+    #[serde(default)]
+    pub allowed_intent_chains: Vec<String>,
+    #[serde(default)]
+    pub denied_intent_chains: Vec<String>,
+    #[serde(default = "default_max_slippage_bps")]
+    pub max_slippage_bps: u16,
+    #[serde(default)]
+    pub allowed_intent_hours_utc: Vec<u8>,
+    #[serde(default = "default_true")]
+    pub intent_unknown_target_requires_hitl: bool,
 }
+
+fn default_max_slippage_bps() -> u16 { 1000 }
+fn default_true() -> bool { true }
 
 impl Default for AsguardPolicy {
     fn default() -> Self {
@@ -20,6 +45,17 @@ impl Default for AsguardPolicy {
             device_ip_lock: true,
             remote_trigger_protection: true,
             active_llm_engine: "ollama".to_string(),
+            allowed_intent_types: vec![],
+            denied_intent_types: vec![],
+            allowed_assets: vec![],
+            denied_assets: vec![],
+            allowed_destinations: vec![],
+            denied_destinations: vec![],
+            allowed_intent_chains: vec![],
+            denied_intent_chains: vec![],
+            max_slippage_bps: default_max_slippage_bps(),
+            allowed_intent_hours_utc: vec![],
+            intent_unknown_target_requires_hitl: true,
         }
     }
 }
@@ -104,6 +140,30 @@ impl PolicyStore {
                     .ok_or("Invalid value for active_llm_engine")?
                     .to_string();
             }
+            "allowed_intent_types" => self.policy.allowed_intent_types = parse_string_list(value)?,
+            "denied_intent_types" => self.policy.denied_intent_types = parse_string_list(value)?,
+            "allowed_assets" => self.policy.allowed_assets = parse_string_list(value)?,
+            "denied_assets" => self.policy.denied_assets = parse_string_list(value)?,
+            "allowed_destinations" => self.policy.allowed_destinations = parse_string_list(value)?,
+            "denied_destinations" => self.policy.denied_destinations = parse_string_list(value)?,
+            "allowed_intent_chains" => self.policy.allowed_intent_chains = parse_string_list(value)?,
+            "denied_intent_chains" => self.policy.denied_intent_chains = parse_string_list(value)?,
+            "max_slippage_bps" => {
+                self.policy.max_slippage_bps = value.as_u64()
+                    .filter(|bps| *bps <= 10_000)
+                    .ok_or("Invalid value for max_slippage_bps")? as u16;
+            }
+            "allowed_intent_hours_utc" => {
+                let hours = value.as_array().ok_or("Invalid value for allowed_intent_hours_utc")?;
+                self.policy.allowed_intent_hours_utc = hours.iter().map(|hour| {
+                    hour.as_u64().filter(|hour| *hour <= 23).map(|hour| hour as u8)
+                        .ok_or("allowed_intent_hours_utc must contain values from 0 to 23")
+                }).collect::<Result<Vec<_>, _>>()?;
+            }
+            "intent_unknown_target_requires_hitl" => {
+                self.policy.intent_unknown_target_requires_hitl = value.as_bool()
+                    .ok_or("Invalid value for intent_unknown_target_requires_hitl")?;
+            }
             _ => return Err(format!("Unknown policy field: {}", field)),
         }
 
@@ -115,4 +175,12 @@ impl PolicyStore {
         self.policy = AsguardPolicy::default();
         self.save()
     }
+}
+
+fn parse_string_list(value: serde_json::Value) -> Result<Vec<String>, String> {
+    value.as_array()
+        .ok_or("Expected an array of strings")?
+        .iter()
+        .map(|item| item.as_str().map(str::to_string).ok_or_else(|| "Expected an array of strings".to_string()))
+        .collect()
 }

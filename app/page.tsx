@@ -47,7 +47,8 @@ export default function Home() {
       fetch(`${base}/api/transactions`, { headers: { Authorization: `Bearer ${apiToken}` } }).then((res) => res.json()),
     ]).then(([health, pending, txs]) => {
       if (cancelled) return;
-      setChainStatus(health.chain?.healthy ? `Solana ${health.chain.network} connected` : `Solana ${health.chain?.network || 'devnet'} unavailable`);
+      const chainName = typeof health.chain?.chain === 'string' ? health.chain.chain : 'NEAR';
+      setChainStatus(health.chain?.healthy ? `${chainName} ${health.chain.network} connected` : `${chainName} ${health.chain?.network || 'unavailable'}`);
       if (Array.isArray(pending.requests)) setPendingApprovals(pending.requests);
       if (Array.isArray(txs.intents)) setTransactions(txs.intents);
     }).catch(() => { if (!cancelled) setChainStatus('Could not load network status'); });

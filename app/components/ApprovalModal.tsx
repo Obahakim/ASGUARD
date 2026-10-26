@@ -15,6 +15,21 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
 
   if (!request) return null;
 
+  const nestedAnomaly = request.context.anomaly && typeof request.context.anomaly === 'object'
+    ? request.context.anomaly as Record<string, unknown>
+    : undefined;
+  const score = typeof request.context.score === 'number'
+    ? request.context.score
+    : typeof request.context.anomaly_score === 'number'
+      ? request.context.anomaly_score
+      : typeof nestedAnomaly?.anomaly_score === 'number' ? nestedAnomaly.anomaly_score : undefined;
+  const severity = score === undefined ? 'REVIEW' : score >= 90 ? 'CRITICAL' : score >= 70 ? 'HIGH' : score >= 40 ? 'ELEVATED' : 'LOW';
+  const severityClass = severity === 'CRITICAL' || severity === 'HIGH'
+    ? 'border-red-400/40 bg-red-400/10 text-red-200'
+    : severity === 'ELEVATED'
+      ? 'border-amber-400/40 bg-amber-400/10 text-amber-200'
+      : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200';
+
   const handleAction = async (action: 'allow_once' | 'allow_session' | 'deny_terminate') => {
     setError('');
     setIsLoading(true);
@@ -52,6 +67,9 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
             <p className="text-sm text-red-300 mt-1">
               {request.incident_type}
             </p>
+          </div>
+          <div className={`inline-flex rounded border px-2.5 py-1 text-xs font-semibold ${severityClass}`}>
+            {severity}{score === undefined ? '' : ` · ${score}/100`}
           </div>
 
           {/* Context Details */}

@@ -4,6 +4,17 @@ export interface AsguardPolicy {
 	device_ip_lock: boolean;
 	remote_trigger_protection: boolean;
 	active_llm_engine: 'ollama' | 'claude' | 'groq';
+	allowed_intent_types?: string[];
+	denied_intent_types?: string[];
+	allowed_assets?: string[];
+	denied_assets?: string[];
+	allowed_destinations?: string[];
+	denied_destinations?: string[];
+	allowed_intent_chains?: string[];
+	denied_intent_chains?: string[];
+	max_slippage_bps?: number;
+	allowed_intent_hours_utc?: number[];
+	intent_unknown_target_requires_hitl?: boolean;
 	updated_at?: string;
 	version?: string;
 }
@@ -224,6 +235,10 @@ export interface TransactionIntent {
 	action: string;
 	resource: string;
 	payload_hash: string;
+	payload_domain?: string;
+	derivation_path?: string;
+	signer_contract?: string;
+	intent_type?: string;
 	amount?: string | number;
 	policy_version?: string;
 	status: TransactionIntentStatus;
@@ -235,15 +250,18 @@ export interface TransactionIntent {
 
 export interface ApprovalAttestation {
 	decision_id: string; intent_id: string; agent_id: string; payload_hash: string;
-	network: string; chain?: string; action: 'approve_once' | 'approve_session';
+	network: string; chain?: string; payload_domain?: string; derivation_path?: string; signer_contract?: string; intent_type?: string;
+	action: 'approve_once' | 'approve_session';
 	max_amount_usd?: number; expires_at: string; anomaly_score: number;
 	rules_triggered: Array<{ rule_id: string; severity: string; score_contribution: number; details?: Record<string, unknown> }>;
 	issued_at: string; policy_version?: string; signature: string;
 }
 export interface SignApprovalRequest {
-	agent_id: string; agent_name: string; action: string; risk_level: 'low' | 'medium' | 'high';
+	agent_id: string; agent_name: string; action: string; risk_level: 'low' | 'medium' | 'high' | 'critical';
 	payload_hash: string; network: string; chain?: string; amount_usd?: number; ip_address?: string;
 	device_id?: string; contract_address?: string; wallet_id?: string; idempotency_key: string;
+	payload_domain?: string; derivation_path?: string; signer_contract?: string; intent_type?: string;
+	near_intent?: Record<string, unknown>;
 	details?: Record<string, unknown>; simulation?: Record<string, unknown>;
 }
 export interface SignApprovalResponse {

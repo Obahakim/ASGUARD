@@ -7,16 +7,28 @@ import fs from 'fs';
 import path from 'path';
 import { AsguardPolicy } from './types';
 
+const MUTABLE_FIELDS = new Set<keyof AsguardPolicy>([
+  'max_auto_trade_usd', 'strict_anomaly_detection', 'device_ip_lock', 'remote_trigger_protection',
+  'active_llm_engine', 'allowed_intent_types', 'denied_intent_types', 'allowed_assets', 'denied_assets',
+  'allowed_destinations', 'denied_destinations', 'allowed_intent_chains', 'denied_intent_chains',
+  'max_slippage_bps', 'allowed_intent_hours_utc', 'intent_unknown_target_requires_hitl',
+]);
+
+function nextPolicyVersion(version: string | undefined): string {
+  const match = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  return match ? `${match[1]}.${match[2]}.${Number(match[3]) + 1}` : `policy-${Date.now()}`;
+}
+
 export class PolicyStore {
   private policyPath: string;
   private policy: AsguardPolicy;
   private watchers: ((policy: AsguardPolicy) => void)[] = [];
 
-  constructor() {
+  constructor(policyPath?: string) {
     // Resolve to ~/.astrid/asguard_policy.json
     const homeDir = process.env.HOME || process.env.USERPROFILE || '/root';
     const astridDir = path.join(homeDir, '.astrid');
-    this.policyPath = path.join(astridDir, 'asguard_policy.json');
+    this.policyPath = policyPath ?? path.join(astridDir, 'asguard_policy.json');
 
     // Initialize with default policy
     this.policy = this.getDefaultPolicy();
@@ -42,6 +54,17 @@ export class PolicyStore {
       device_ip_lock: true,
       remote_trigger_protection: true,
       active_llm_engine: 'ollama',
+      allowed_intent_types: [],
+      denied_intent_types: [],
+      allowed_assets: [],
+      denied_assets: [],
+      allowed_destinations: [],
+      denied_destinations: [],
+      allowed_intent_chains: [],
+      denied_intent_chains: [],
+      max_slippage_bps: 1000,
+      allowed_intent_hours_utc: [],
+      intent_unknown_target_requires_hitl: true,
       updated_at: new Date().toISOString(),
       version: '1.0.0',
     };
@@ -92,15 +115,11 @@ export class PolicyStore {
   private save(): void {
     try {
       this.ensureDirectory();
-
-      const toWrite: AsguardPolicy = {
-        ...this.policy,
-        updated_at: new Date().toISOString(),
-      };
+      this.policy.updated_at = new Date().toISOString();
 
       fs.writeFileSync(
         this.policyPath,
-        JSON.stringify(toWrite, null, 2),
+        JSON.stringify(this.policy, null, 2),
         'utf-8'
       );
 
@@ -126,6 +145,7 @@ export class PolicyStore {
     field: keyof AsguardPolicy,
     value: unknown
   ): AsguardPolicy {
+    if (!MUTABLE_FIELDS.has(field)) throw new Error(`Policy field is not mutable: ${String(field)}`);
     const oldValue = this.policy[field];
 
     // Validate field type
@@ -145,10 +165,30 @@ export class PolicyStore {
       if (!['ollama', 'claude', 'groq'].includes(value as string)) {
         throw new Error('active_llm_engine must be one of: ollama, claude, groq');
       }
+    } else if ([
+      'allowed_intent_types', 'denied_intent_types', 'allowed_assets', 'denied_assets',
+      'allowed_destinations', 'denied_destinations', 'allowed_intent_chains', 'denied_intent_chains',
+    ].includes(field)) {
+      if (!Array.isArray(value) || !value.every(item => typeof item === 'string' && item.trim() === item && item.length > 0)) {
+        throw new Error(`${field} must be an array of non-empty strings.`);
+      }
+    } else if (field === 'max_slippage_bps') {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 10_000) {
+        throw new Error('max_slippage_bps must be an integer from 0 to 10000.');
+      }
+    } else if (field === 'allowed_intent_hours_utc') {
+      if (!Array.isArray(value) || !value.every(hour => Number.isInteger(hour) && hour >= 0 && hour <= 23)) {
+        throw new Error('allowed_intent_hours_utc must contain UTC hours from 0 to 23.');
+      }
+    } else if (field === 'intent_unknown_target_requires_hitl') {
+      if (typeof value !== 'boolean') throw new Error('intent_unknown_target_requires_hitl must be a boolean.');
+    } else if (!Object.prototype.hasOwnProperty.call(this.policy, field)) {
+      throw new Error(`Unknown policy field: ${String(field)}`);
     }
 
     // Update policy
     this.policy[field] = value as never;
+    this.policy.version = nextPolicyVersion(this.policy.version);
     this.save();
 
     console.log(
@@ -172,7 +212,9 @@ export class PolicyStore {
    * Reset policy to defaults
    */
   public reset(): AsguardPolicy {
+    const version = nextPolicyVersion(this.policy.version);
     this.policy = this.getDefaultPolicy();
+    this.policy.version = version;
     this.save();
     console.log('[PolicyStore] Policy reset to defaults');
     return { ...this.policy };

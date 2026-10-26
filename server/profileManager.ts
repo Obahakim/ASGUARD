@@ -1,5 +1,6 @@
 import { AnomalyProfile, AgentActivityEvent } from './types';
 import { logger } from './logger';
+import { JsonProfilePersistence, type PersistedAgentProfile, type ProfilePersistence } from './profileStore';
 
 /**
  * ProfileManager maintains behavioral baselines for each agent
@@ -9,6 +10,23 @@ export class ProfileManager {
   private profiles: Map<string, AnomalyProfile> = new Map();
   private readonly MIN_OBSERVATIONS = 5; // Minimum activities before anomaly detection
   private readonly WINDOW_MS = 60 * 60 * 1000;
+
+  constructor(private readonly persistence: ProfilePersistence = new JsonProfilePersistence()) {
+    for (const stored of persistence.load()) {
+      this.profiles.set(stored.agent_id, {
+        agent_id: stored.agent_id,
+        baseline_trade_frequency: stored.baseline_trade_frequency,
+        baseline_avg_amount_usd: stored.baseline_avg_amount_usd,
+        baseline_ips: new Set(stored.baseline_ips),
+        baseline_devices: new Set(stored.baseline_devices),
+        first_seen: new Date(stored.first_seen),
+        last_updated: new Date(stored.last_updated),
+        observation_count: stored.observation_count,
+        event_history: stored.event_history.map(event => ({ ...event })),
+        known_chains: new Set(stored.known_chains),
+      });
+    }
+  }
 
   /**
    * Get or create agent profile
@@ -72,6 +90,7 @@ export class ProfileManager {
     history.push({ timestamp: Date.now(), amount_usd: metadata.amount_usd ?? 0 });
     if (history.length > 500) history.shift();
     profile.last_updated = new Date();
+    this.persist();
 
     logger.debug(`[ProfileManager] Updated ${activity.agent_id}: freq=${profile.baseline_trade_frequency.toFixed(2)}, avg=$${profile.baseline_avg_amount_usd.toFixed(2)}`, {
       observations: profile.observation_count,
@@ -123,7 +142,24 @@ export class ProfileManager {
    */
   resetProfile(agentId: string): void {
     this.profiles.delete(agentId);
+    this.persist();
     logger.info(`[ProfileManager] Profile reset for ${agentId}`);
+  }
+
+  private persist(): void {
+    const profiles: PersistedAgentProfile[] = [...this.profiles.values()].map(profile => ({
+      agent_id: profile.agent_id,
+      baseline_trade_frequency: profile.baseline_trade_frequency,
+      baseline_avg_amount_usd: profile.baseline_avg_amount_usd,
+      baseline_ips: [...profile.baseline_ips],
+      baseline_devices: [...profile.baseline_devices],
+      first_seen: profile.first_seen.toISOString(),
+      last_updated: profile.last_updated.toISOString(),
+      observation_count: profile.observation_count,
+      event_history: (profile.event_history ?? []).map(event => ({ ...event })),
+      known_chains: [...(profile.known_chains ?? [])],
+    }));
+    this.persistence.save(profiles);
   }
 
   /**

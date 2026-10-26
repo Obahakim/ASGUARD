@@ -9,6 +9,7 @@
     "build": "npm run build:server && next build",
     "build:server": "tsc --noEmit -p tsconfig.server.json",
     "test": "node --import tsx --test server/**/*.test.ts",
+    "demo:near": "node --env-file=.env --import tsx scripts/demo-trader.ts",
     "lint": "eslint .",
     "start": "next start",
     "backend:start": "node --env-file=.env --import tsx server/index.ts"

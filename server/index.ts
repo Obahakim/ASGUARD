@@ -30,9 +30,15 @@ import { UnicityAdapter } from './aos/unicityAdapter';
 import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
 import { createTransactionIntent, getTransactionIntent, listTransactionIntents, recordSimulation, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
-import type { ChainAdapter } from './aos/chainAdapter';
+import { createSolanaDevnetAdapter } from './aos/chainAdapter';
+import { nearAdapter } from './aos/nearAdapter';
 import { chainRegistry } from './aos/chainRegistry';
-import { getApprovalResult, requestSignApproval as processSignApproval } from './approvals';
+import {
+  getApprovalResult,
+  requestSignApproval as processSignApproval,
+  requestNearIntentApproval as processNearIntentApproval,
+  requestChainSignatureApproval as processChainSignatureApproval,
+} from './approvals';
 import { notifier } from './notifier';
 import { handleMcpRequest } from './mcp';
 
@@ -53,7 +59,9 @@ const capabilityManager = new CapabilityManager(defaultCapabilities);
 capabilityManager.grant('audit_anchoring');
 runtimeBridge.connect();
 const unicityAdapter = new UnicityAdapter();
-const chainAdapter = chainRegistry.resolve('solana', 'devnet') as ChainAdapter;
+if (process.env.ASGUARD_ENABLE_SOLANA_ADAPTER === 'true') {
+  chainRegistry.register('solana', createSolanaDevnetAdapter());
+}
 
 // Initialize Express app
 const app = express();
@@ -192,6 +200,10 @@ async function reportMcpViolation(input: Record<string, unknown>, identity: NonN
 }
 
 async function guardAndSendSolana(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
+  const solanaAdapter = chainRegistry.resolve('solana', 'devnet');
+  if (!('simulateSignedTransaction' in solanaAdapter) || !('sendSignedTransaction' in solanaAdapter)) {
+    throw new Error('Solana execution is disabled; register an optional Solana adapter explicitly.');
+  }
   const stringFields = ['idempotency_key', 'agent_id', 'agent_name', 'wallet_id', 'action', 'transaction_base64'];
   if (stringFields.some((field) => typeof input[field] !== 'string' || !(input[field] as string).trim())) {
     throw new Error(`Required string fields: ${stringFields.join(', ')}.`);
@@ -209,8 +221,8 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
     correlation_id: crypto.randomUUID(),
     agent_id: input.agent_id as string,
     wallet_id: input.wallet_id as string,
-    network: `${chainAdapter.chain}:${chainAdapter.network}`,
-    chain: chainAdapter.chain,
+    network: `${solanaAdapter.chain}:${solanaAdapter.network}`,
+    chain: solanaAdapter.chain,
     action: input.action as string,
     resource: typeof input.contract_address === 'string' ? input.contract_address : 'solana-transaction',
     payload_hash: payloadHash,
@@ -219,7 +231,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
     risk_level: input.risk_level as 'low' | 'medium' | 'high',
     expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
   });
-  if (intent.agent_id !== input.agent_id || intent.wallet_id !== input.wallet_id || intent.network !== `${chainAdapter.chain}:${chainAdapter.network}` || intent.payload_hash !== payloadHash) {
+  if (intent.agent_id !== input.agent_id || intent.wallet_id !== input.wallet_id || intent.network !== `${solanaAdapter.chain}:${solanaAdapter.network}` || intent.payload_hash !== payloadHash) {
     throw new Error('idempotency_key is already bound to a different agent, wallet, network, or transaction payload.');
   }
   if (intent.status !== 'created') return { intent, duplicate: true, submitted: intent.status === 'submitted' || intent.status === 'confirmed' };
@@ -228,7 +240,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
   const event: AgentActivityEvent = {
     type: 'agent_activity', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
     agent_id: intent.agent_id, agent_name: input.agent_name as string, action: intent.action,
-    risk_level: input.risk_level as AgentActivityEvent['risk_level'], chain: intent.chain, network: chainAdapter.network, details: { chain: intent.chain, network: chainAdapter.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
+    risk_level: input.risk_level as AgentActivityEvent['risk_level'], chain: intent.chain, network: solanaAdapter.network, details: { chain: intent.chain, network: solanaAdapter.network, wallet_id: intent.wallet_id, intent_id: intent.id, payload_hash: payloadHash },
   };
   auditAnchor.record('guarded_transaction_requested', {
     intent_id: intent.id, agent_id: intent.agent_id, wallet_id: intent.wallet_id,
@@ -248,7 +260,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
     logger.broadcastEvent(anomaly.anomaly_event);
   }
 
-  const simulation = await chainAdapter.simulateSignedTransaction(transactionBase64);
+  const simulation = await solanaAdapter.simulateSignedTransaction(transactionBase64);
   intent = recordSimulation(intent.id, { status: simulation.err === null ? 'passed' : 'failed', details: simulation });
   if (simulation.err !== null) {
     auditAnchor.record('guarded_transaction_blocked', {
@@ -305,7 +317,7 @@ async function guardAndSendSolana(input: Record<string, unknown>, identity: NonN
 
   intent = transitionTransactionIntent(intent.id, 'authorized');
   try {
-    const signature = await chainAdapter.sendSignedTransaction(transactionBase64);
+    const signature = await solanaAdapter.sendSignedTransaction(transactionBase64);
     intent = transitionTransactionIntent(intent.id, 'submitted');
     auditAnchor.record('guarded_transaction_submitted', { intent_id: intent.id, signature, network: intent.network });
     bridge.broadcastEvent({
@@ -326,12 +338,20 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     getStatus: async () => ({
       runtime: runtimeName,
       daemon_connected: runtimeBridge.isConnected(),
-      chain: await chainAdapter.health(),
+      chain: await nearAdapter.health(),
+      near: {
+        rpc_url: nearAdapter.rpcUrl,
+        intents_api_url: nearAdapter.intentsApiUrl,
+        intents_verifier: nearAdapter.intentsVerifier,
+        chain_signatures_contract: nearAdapter.chainSignaturesContract,
+      },
     }),
     getPolicy: () => policyStore.getPolicy(),
     reportActivity: reportMcpActivity,
     reportViolation: reportMcpViolation,
     requestSignApproval: async (input, identity) => ({ ...await processSignApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
+    requestNearIntentApproval: async (input, identity) => ({ ...await processNearIntentApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
+    requestChainSignatureApproval: async (input, identity) => ({ ...await processChainSignatureApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     guardAndSendSolana,
     getTransactionStatus: getTransactionIntent,
     getApprovalStatus: getApprovalResult,
@@ -342,6 +362,26 @@ app.post('/api/approvals/sign-request', apiAuthenticator.requireAnyRole('runtime
   try {
     if (!req.asguardIdentity) { res.status(401).json({ status:'rejected', reason:'authentication_required' }); return; }
     const response = await processSignApproval(req.body as Record<string, unknown>, req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
+    res.status(response.status === 'rejected' ? 403 : 200).json(response);
+  } catch (error) {
+    res.status(400).json({ status:'rejected', reason:error instanceof Error ? error.message : 'invalid_request' });
+  }
+});
+
+app.post('/api/approvals/near-intent', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ status:'rejected', reason:'authentication_required' }); return; }
+    const response = await processNearIntentApproval(req.body as Record<string, unknown>, req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
+    res.status(response.status === 'rejected' ? 403 : 200).json(response);
+  } catch (error) {
+    res.status(400).json({ status:'rejected', reason:error instanceof Error ? error.message : 'invalid_request' });
+  }
+});
+
+app.post('/api/approvals/chain-signature', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ status:'rejected', reason:'authentication_required' }); return; }
+    const response = await processChainSignatureApproval(req.body as Record<string, unknown>, req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
     res.status(response.status === 'rejected' ? 403 : 200).json(response);
   } catch (error) {
     res.status(400).json({ status:'rejected', reason:error instanceof Error ? error.message : 'invalid_request' });
@@ -428,13 +468,14 @@ app.get('/api/transactions/:id', apiAuthenticator.requireAnyRole('admin', 'opera
 app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
-    const chain = await chainAdapter.health();
+    const chain = await nearAdapter.health();
     const response: HealthCheckResponse & {
       runtimeConfig: typeof runtimeConfig;
       capsule: typeof capsuleConfig;
       providers: ReturnType<typeof providerRegistry.list>;
       unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
-      chain: Awaited<ReturnType<typeof chainAdapter.health>>;
+      chain: Awaited<ReturnType<typeof nearAdapter.health>>;
+      near: { rpc_url: string; intents_api_url: string; intents_verifier: string; chain_signatures_contract: string };
     } = {
       status: chain.healthy ? 'ok' : 'degraded',
       daemon_connected: runtimeBridge.isConnected(),
@@ -447,6 +488,12 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       providers: providerRegistry.list(),
       unicity: blueprint,
       chain,
+      near: {
+        rpc_url: nearAdapter.rpcUrl,
+        intents_api_url: nearAdapter.intentsApiUrl,
+        intents_verifier: nearAdapter.intentsVerifier,
+        chain_signatures_contract: nearAdapter.chainSignaturesContract,
+      },
     };
     res.json(response);
   } catch (error) {
@@ -799,7 +846,7 @@ app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runt
 app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
     const blueprint = await unicityAdapter.buildBlueprint();
-    const chain = await chainAdapter.health();
+    const chain = await nearAdapter.health();
     res.json({
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
@@ -808,6 +855,12 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       providers: providerRegistry.list(),
       unicity: blueprint,
       chain,
+      near: {
+        rpc_url: nearAdapter.rpcUrl,
+        intents_api_url: nearAdapter.intentsApiUrl,
+        intents_verifier: nearAdapter.intentsVerifier,
+        chain_signatures_contract: nearAdapter.chainSignaturesContract,
+      },
     });
   } catch (error) {
     logger.error('[Server] Error building Unicity blueprint for stats:', { error: String(error) });
@@ -817,7 +870,13 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       uptime_ms: process.uptime() * 1000,
       capsule: capsuleConfig,
       providers: providerRegistry.list(),
-      chain: await chainAdapter.health(),
+      chain: await nearAdapter.health(),
+      near: {
+        rpc_url: nearAdapter.rpcUrl,
+        intents_api_url: nearAdapter.intentsApiUrl,
+        intents_verifier: nearAdapter.intentsVerifier,
+        chain_signatures_contract: nearAdapter.chainSignaturesContract,
+      },
       error: String(error),
     });
   }
