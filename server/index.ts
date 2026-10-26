@@ -39,6 +39,7 @@ import {
 } from './approvals';
 import { notifier } from './notifier';
 import { handleMcpRequest } from './mcp';
+import { NearWalletWatchStore, NearWalletWatcher, type NearWalletWatchStatus, type WatchedNearActivity, type WatchedNearWallet } from './nearWalletWatch';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -90,6 +91,18 @@ app.use(express.urlencoded({ extended: true }));
 // Initialize WebSocket bridge
 const bridge = new WebSocketBridge(httpServer, Number(PORT), consumeWebSocketTicket, allowedOrigins);
 logger.setBridge(bridge);
+const walletWatchStore = new NearWalletWatchStore();
+const walletWatcher = new NearWalletWatcher({
+  store: walletWatchStore,
+  audit: (type, payload) => { auditAnchor.record(type, payload); },
+  onActivity: (activity) => {
+    const event: Event = { type: 'audit_log', timestamp: activity.observed_at, id: activity.id, agent_id: activity.agent_id,
+      action: 'NEAR wallet activity observed', resource: activity.account_id, status: 'success', details: activity };
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+  },
+});
+walletWatcher.start();
 
 // Initialize anomaly engine (Phase 3)
 const anomalyEngine = new AnomalyEngine();
@@ -199,6 +212,7 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
       runtime: runtimeName,
       daemon_connected: runtimeBridge.isConnected(),
       chain: await nearAdapter.health(),
+      wallet_watch: walletWatcher.status(),
       near: {
         rpc_url: nearAdapter.rpcUrl,
         intents_api_url: nearAdapter.intentsApiUrl,
@@ -214,7 +228,57 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     requestChainSignatureApproval: async (input, identity) => ({ ...await processChainSignatureApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     getTransactionStatus: getTransactionIntent,
     getApprovalStatus: getApprovalResult,
+    registerNearWallet: (input, identity) => registerWalletWatch(input, identity),
+    listNearWallets: (agentId) => walletWatchStore.list(agentId),
+    getNearWalletActivity: (input) => walletWatchStore.recentActivity({
+      watch_id: typeof input.watch_id === 'string' ? input.watch_id : undefined,
+      agent_id: typeof input.agent_id === 'string' ? input.agent_id : undefined,
+      account_id: typeof input.account_id === 'string' ? input.account_id : undefined,
+      limit: typeof input.limit === 'number' ? input.limit : undefined,
+    }),
   });
+});
+
+function registerWalletWatch(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>): WatchedNearWallet {
+  if (typeof input.agent_id !== 'string' || typeof input.account_id !== 'string' || typeof input.network !== 'string'
+    || (input.label !== undefined && typeof input.label !== 'string')) throw new Error('agent_id, account_id, network, and optional label must be strings.');
+  const result = walletWatchStore.register({ agent_id: input.agent_id, account_id: input.account_id, network: input.network, label: input.label as string | undefined });
+  auditAnchor.record(result.created ? 'wallet_watch_registered' : 'wallet_watch_updated', {
+    watch_id: result.wallet.id, agent_id: result.wallet.agent_id, account_id: result.wallet.account_id,
+    network: result.wallet.network, label: result.wallet.label, actor_id: identity.id,
+  });
+  return result.wallet;
+}
+
+app.post('/api/wallet-watch', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ success: false, error: 'Authentication required.' }); return; }
+    const wallet = registerWalletWatch(req.body as Record<string, unknown>, req.asguardIdentity);
+    res.status(201).json({ success: true, wallet });
+  } catch (error) { res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid wallet watch.' }); }
+});
+
+app.get('/api/wallet-watch', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  const agentId = typeof req.query.agent_id === 'string' ? req.query.agent_id : undefined;
+  res.json({ success: true, wallets: walletWatchStore.list(agentId), status: walletWatcher.status() });
+});
+
+app.post('/api/wallet-watch/:id/deactivate', apiAuthenticator.requireAnyRole('admin', 'operator'), (req: Request, res: Response) => {
+  const wallet = walletWatchStore.deactivate(req.params.id);
+  if (!wallet) { res.status(404).json({ success: false, error: 'Wallet watch not found.' }); return; }
+  auditAnchor.record('wallet_watch_deactivated', { watch_id: wallet.id, agent_id: wallet.agent_id, account_id: wallet.account_id, network: wallet.network, actor_id: req.asguardIdentity?.id });
+  res.json({ success: true, wallet });
+});
+
+app.get('/api/wallet-watch/activity', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (req: Request, res: Response) => {
+  const limit = typeof req.query.limit === 'string' && /^\d+$/.test(req.query.limit) ? Number(req.query.limit) : undefined;
+  if (limit !== undefined && (limit < 1 || limit > 200)) { res.status(400).json({ success: false, error: 'limit must be 1-200.' }); return; }
+  res.json({ success: true, activity: walletWatchStore.recentActivity({
+    watch_id: typeof req.query.watch_id === 'string' ? req.query.watch_id : undefined,
+    agent_id: typeof req.query.agent_id === 'string' ? req.query.agent_id : undefined,
+    account_id: typeof req.query.account_id === 'string' ? req.query.account_id : undefined,
+    limit,
+  }) });
 });
 
 app.post('/api/approvals/sign-request', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
@@ -333,9 +397,10 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       providers: ReturnType<typeof providerRegistry.list>;
       unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
       chain: Awaited<ReturnType<typeof nearAdapter.health>>;
+      wallet_watch: NearWalletWatchStatus;
       near: { rpc_url: string; intents_api_url: string; intents_verifier: string; chain_signatures_contract: string };
     } = {
-      status: chain.healthy ? 'ok' : 'degraded',
+      status: chain.healthy && walletWatcher.status().healthy ? 'ok' : 'degraded',
       daemon_connected: runtimeBridge.isConnected(),
       timestamp: new Date().toISOString(),
       version: '1.0.0',
@@ -345,6 +410,7 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       providers: providerRegistry.list(),
       unicity: blueprint,
       chain,
+      wallet_watch: walletWatcher.status(),
       near: {
         rpc_url: nearAdapter.rpcUrl,
         intents_api_url: nearAdapter.intentsApiUrl,
@@ -362,6 +428,7 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       version: '1.0.0',
       runtime: runtimeName,
       capabilities: capabilityManager.list(),
+      wallet_watch: walletWatcher.status(),
       error: String(error),
     });
   }
@@ -858,6 +925,7 @@ app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
 // Graceful shutdown
 const shutdown = () => {
   logger.info('[Server] Shutting down gracefully...');
+  walletWatcher.stop();
   hitlHandler.close();
   bridge.close();
   httpServer.close(() => {

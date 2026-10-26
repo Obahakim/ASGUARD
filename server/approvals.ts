@@ -114,9 +114,10 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
   const hardBlockReason = intentPolicy?.blockedReasons[0]
     ?? (amountUsd !== undefined && amountUsd > policy.max_auto_trade_usd ? 'budget_overrun' : undefined);
   if (hardBlockReason) {
-    recordPreflight(intent.id, { kind: nearIntent ? 'near_intent_policy_and_price' : 'approval_policy', status: 'blocked', checked_at: new Date().toISOString(), reasons: [...(intentPolicy?.blockedReasons ?? []), hardBlockReason] });
+    const preflight = { kind: nearIntent ? 'near_intent_policy_and_price' as const : 'approval_policy' as const, status: 'blocked' as const, checked_at: new Date().toISOString(), reasons: [...(intentPolicy?.blockedReasons ?? []), hardBlockReason] };
+    recordPreflight(intent.id, preflight);
     transitionTransactionIntent(intent.id, 'blocked'); auditAnchor.record('approval_rejected',{intent_id:intent.id,agent_id:request.agent_id,reason:hardBlockReason,actor_id:identity.id});
-    const response: SignApprovalResponse = { status:'rejected', intent_id:intent.id, reason:hardBlockReason, anomaly:evaln }; return cacheResponse(response);
+    const response: SignApprovalResponse = { status:'rejected', intent_id:intent.id, reason:hardBlockReason, anomaly:evaln, preflight }; return cacheResponse(response);
   }
   const targetAdapter = chainRegistry.resolve(chain ?? request.network, chain ? resolvedNetwork : undefined);
   const requiresHuman = evaln.action === 'halt_and_hitl'
@@ -131,14 +132,14 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
   recordPreflight(intent.id, preflight);
   if (!requiresHuman) {
     transitionTransactionIntent(intent.id,'approved'); const attestation=issue('approve_once'); auditAnchor.record('approval_issued',{intent_id:intent.id,agent_id:request.agent_id,score:evaln.anomaly_score,path:evaln.action,network,chain:request.chain??chain,payload_hash:request.payload_hash,payload_domain:request.payload_domain,derivation_path:request.derivation_path,signer_contract:request.signer_contract,intent_type:nearIntent?.intent.intent_type??request.intent_type});
-    const response:SignApprovalResponse={status:'approved',intent_id:intent.id,decision_id:attestation.decision_id,attestation,anomaly:evaln};return cacheResponse(response);
+    const response:SignApprovalResponse={status:'approved',intent_id:intent.id,decision_id:attestation.decision_id,attestation,anomaly:evaln,preflight};return cacheResponse(response);
   }
   transitionTransactionIntent(intent.id,'pending_hitl');
   const event: HITLRequestEvent = {type:'hitl_request',timestamp:new Date().toISOString(),id:`hitl_${crypto.randomUUID()}`,request_id:`req_${crypto.randomUUID()}`,agent_id:request.agent_id,incident_type:'sign_approval',context:{intent_id:intent.id,action:request.action,amount_usd:amountUsd,score:evaln.anomaly_score,rules:evaln.rules_triggered,network,chain:request.chain??chain,payload_domain:request.payload_domain,intent_type:nearIntent?.intent.intent_type??request.intent_type,near_intent:nearIntent?.intent,derivation_path:request.derivation_path,signer_contract:request.signer_contract,human_review_reasons:intentPolicy?.humanReviewReasons,preflight},action_options:['allow_once','allow_session','deny_terminate'],expires_at:intent.expires_at};
   broadcast(event);
   void notifier.notifyForDecision({agent_id:request.agent_id,action:request.action,amount_usd:amountUsd,request_id:event.request_id,status:'pending_hitl',expires_at:event.expires_at,score:evaln.anomaly_score,rules:evaln.rules_triggered,requires_hitl:true}).catch(error=>logger.error('[Approval] Notifier failed',{error:String(error)}));
   auditAnchor.record('approval_pending_hitl',{intent_id:intent.id,request_id:event.request_id,agent_id:request.agent_id,score:evaln.anomaly_score,network});
-  const pendingResponse: SignApprovalResponse = { status:'pending_hitl', intent_id:intent.id, request_id:event.request_id, reason:'human_approval_required', anomaly:evaln };
+  const pendingResponse: SignApprovalResponse = { status:'pending_hitl', intent_id:intent.id, request_id:event.request_id, reason:'human_approval_required', anomaly:evaln, preflight };
   cacheResponse(pendingResponse);
   requestResults.set(event.request_id, pendingResponse);
   void (async () => {
@@ -148,12 +149,12 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
       let finalResponse: SignApprovalResponse;
       if (decision.action === 'deny_terminate') {
         transitionTransactionIntent(intent.id,'rejected');
-        finalResponse = {status:'rejected',intent_id:intent.id,request_id:event.request_id,reason:decision.reason === 'Request expired' ? 'timeout_deny' : decision.reason ?? 'human_denied',anomaly:evaln};
+        finalResponse = {status:'rejected',intent_id:intent.id,request_id:event.request_id,reason:decision.reason === 'Request expired' ? 'timeout_deny' : decision.reason ?? 'human_denied',anomaly:evaln,preflight};
       } else {
         const attestation=issue(decision.action==='allow_session'?'approve_session':'approve_once');
         transitionTransactionIntent(intent.id,'approved');
         auditAnchor.record('approval_issued',{intent_id:intent.id,agent_id:request.agent_id,request_id:event.request_id,actor_id:decision.actor_id,decision:decision.action,network,payload_hash:request.payload_hash,payload_domain:request.payload_domain,derivation_path:request.derivation_path,signer_contract:request.signer_contract,intent_type:nearIntent?.intent.intent_type??request.intent_type});
-        finalResponse={status:'approved',intent_id:intent.id,request_id:event.request_id,decision_id:attestation.decision_id,attestation,anomaly:evaln};
+        finalResponse={status:'approved',intent_id:intent.id,request_id:event.request_id,decision_id:attestation.decision_id,attestation,anomaly:evaln,preflight};
       }
       cacheResponse(finalResponse);requestResults.set(event.request_id,finalResponse);
     } catch(error) {

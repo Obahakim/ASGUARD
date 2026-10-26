@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["agent-sdk/**/*.ts", "scripts/demo-near.ts", "scripts/demo-agent-guard.ts", "scripts/demo-watch.ts"]
+}

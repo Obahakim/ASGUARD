@@ -32,6 +32,10 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
   const preflight = request.context.preflight && typeof request.context.preflight === 'object'
     ? request.context.preflight as Record<string, unknown>
     : undefined;
+  const nearIntent = request.context.near_intent && typeof request.context.near_intent === 'object'
+    ? request.context.near_intent as Record<string, unknown>
+    : undefined;
+  const rules = Array.isArray(request.context.rules) ? request.context.rules as Array<Record<string, unknown>> : [];
 
   const handleAction = async (action: 'allow_once' | 'allow_session' | 'deny_terminate') => {
     setError('');
@@ -74,6 +78,17 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
           <div className={`inline-flex rounded border px-2.5 py-1 text-xs font-semibold ${severityClass}`}>
             {severity}{score === undefined ? '' : ` · ${score}/100`}
           </div>
+          {nearIntent && <div className="grid grid-cols-1 gap-2 rounded border asguard-border bg-slate-800/50 p-3 text-xs sm:grid-cols-2">
+            <p><span className="text-slate-400">Amount: </span><span className="break-all text-slate-100">{String(nearIntent.amount ?? 'unknown')} smallest units</span></p>
+            <p><span className="text-slate-400">Verified USD: </span><span className="text-slate-100">{typeof request.context.amount_usd === 'number' ? `$${request.context.amount_usd.toFixed(2)}` : 'unavailable'}</span></p>
+            <p className="break-all"><span className="text-slate-400">From: </span><span className="text-slate-100">{String(nearIntent.origin_asset ?? 'unknown asset')}</span></p>
+            <p className="break-all"><span className="text-slate-400">To: </span><span className="text-slate-100">{String(nearIntent.destination_asset ?? 'unknown asset')}</span></p>
+            <p className="break-all sm:col-span-2"><span className="text-slate-400">Recipient: </span><span className="text-slate-100">{String(nearIntent.recipient ?? 'not decoded')}</span></p>
+          </div>}
+          {rules.length > 0 && <div className="rounded border asguard-border bg-slate-800/50 p-3 text-xs">
+            <p className="mb-1 font-semibold uppercase tracking-wide text-slate-400">Triggered rules</p>
+            <ul className="list-inside list-disc space-y-1 text-slate-200">{rules.map((rule, index) => <li key={`${String(rule.rule_id ?? 'rule')}-${index}`}>{String(rule.rule_id ?? 'Rule')} · {String(rule.severity ?? 'info')} · +{String(rule.score_contribution ?? 0)}</li>)}</ul>
+          </div>}
 
           {/* Context Details */}
           <div className="max-h-56 overflow-auto rounded-lg border asguard-border bg-slate-800/50 p-4">

@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Settings, FileText } from 'lucide-react';
+import { LayoutDashboard, Settings, FileText, Eye } from 'lucide-react';
 
 interface TabsProps {
   activeTab: string;
@@ -11,6 +11,7 @@ const tabs = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'rules', label: 'Rule Settings', icon: Settings },
   { id: 'logs', label: 'Audit Logs', icon: FileText },
+  { id: 'wallet-watch', label: 'Wallet Watch', icon: Eye },
 ];
 
 export default function Tabs({ activeTab, onTabChange }: TabsProps) {

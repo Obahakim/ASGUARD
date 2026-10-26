@@ -120,22 +120,24 @@ export function issueApprovalAttestation(input: {
   };
 }
 
+export interface ApprovalVerificationOptions {
+  signingKey?: string;
+  bytesToSign?: Uint8Array | string;
+  expectedAgentId?: string;
+  expectedPayloadHash?: string;
+  expectedPayloadDomain?: string;
+  expectedDerivationPath?: string;
+  expectedIntentType?: string;
+  expectedNetwork?: string;
+  expectedChain?: string;
+  expectedSignerContract?: string;
+  maxAmountUsd?: number;
+  now?: Date;
+}
+
 export function verifyApprovalAttestation(
   attestation: Pick<ApprovalAttestation, 'decision_id' | 'intent_id' | 'agent_id' | 'network' | 'chain' | 'payload_domain' | 'derivation_path' | 'signer_contract' | 'intent_type' | 'payload_hash' | 'action' | 'max_amount_usd' | 'expires_at' | 'anomaly_score' | 'rules_triggered' | 'issued_at' | 'policy_version' | 'signature'>,
-  opts?: {
-    signingKey?: string;
-    bytesToSign?: Uint8Array | string;
-    expectedAgentId?: string;
-    expectedPayloadHash?: string;
-    expectedPayloadDomain?: string;
-    expectedDerivationPath?: string;
-    expectedIntentType?: string;
-    expectedNetwork?: string;
-    expectedChain?: string;
-    expectedSignerContract?: string;
-    maxAmountUsd?: number;
-    now?: Date;
-  }
+  opts?: ApprovalVerificationOptions
 ): { valid: boolean; reason?: string } {
   const signingKey = (opts?.signingKey ?? getApprovalSigningKey()).trim();
   const now = opts?.now ?? new Date();

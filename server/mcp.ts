@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { ApiIdentity } from './auth';
 import type { AsguardPolicy } from './types';
+import type { WatchedNearActivity, WatchedNearWallet } from './nearWalletWatch';
 
 export interface McpServices {
   getStatus(): Promise<Record<string, unknown>>;
@@ -12,6 +13,9 @@ export interface McpServices {
   requestChainSignatureApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   getTransactionStatus(id: string): unknown;
   getApprovalStatus(id: string): unknown;
+  registerNearWallet(input: Record<string, unknown>, identity: ApiIdentity): WatchedNearWallet;
+  listNearWallets(agentId?: string): WatchedNearWallet[];
+  getNearWalletActivity(input: Record<string, unknown>): WatchedNearActivity[];
 }
 
 type McpRequest = { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
@@ -27,6 +31,25 @@ const tools = [
     name: 'asguard_get_policy',
     description: 'Read the active ASGUARD safety policy before proposing an agent action.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'asguard_watch_near_wallet',
+    description: 'Register a public NEAR account for read-only activity monitoring; ASGUARD does not control or sign for it.',
+    inputSchema: { type: 'object', required: ['agent_id', 'account_id', 'network'], properties: {
+      agent_id: { type: 'string', minLength: 1, maxLength: 128 }, account_id: { type: 'string', minLength: 2, maxLength: 64 },
+      network: { type: 'string', enum: ['near:testnet', 'near:mainnet'] }, label: { type: 'string', maxLength: 128 },
+    }, additionalProperties: false },
+  },
+  {
+    name: 'asguard_list_watched_wallets', description: 'List registered public NEAR account watches.',
+    inputSchema: { type: 'object', properties: { agent_id: { type: 'string', maxLength: 128 } }, additionalProperties: false },
+  },
+  {
+    name: 'asguard_get_wallet_activity', description: 'Read recent public NEAR transactions and receipts observed for watched accounts.',
+    inputSchema: { type: 'object', properties: {
+      watch_id: { type: 'string', maxLength: 128 }, agent_id: { type: 'string', maxLength: 128 },
+      account_id: { type: 'string', minLength: 2, maxLength: 64 }, limit: { type: 'integer', minimum: 1, maximum: 200 },
+    }, additionalProperties: false },
   },
   {
     name: 'asguard_request_sign_approval',
@@ -219,6 +242,24 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
             return;
           }
           value = services.getPolicy();
+        } else if (name === 'asguard_watch_near_wallet') {
+          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to register a wallet watch.'));
+            return;
+          }
+          value = services.registerNearWallet(args, req.asguardIdentity);
+        } else if (name === 'asguard_list_watched_wallets') {
+          if (!req.asguardIdentity?.roles.some((role) => ['admin', 'operator', 'auditor'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to list wallet watches.'));
+            return;
+          }
+          value = services.listNearWallets(typeof args.agent_id === 'string' ? args.agent_id : undefined);
+        } else if (name === 'asguard_get_wallet_activity') {
+          if (!req.asguardIdentity?.roles.some((role) => ['admin', 'operator', 'auditor'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to read watched wallet activity.'));
+            return;
+          }
+          value = services.getNearWalletActivity(args);
         } else if (name === 'asguard_request_sign_approval') {
           if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
             res.status(403).json(errorResponse(id, -32003, 'Insufficient role to request sign approval.'));

@@ -9,6 +9,7 @@ import ActivityFeed from './components/ActivityFeed';
 import SecurityRules from './components/SecurityRules';
 import AnomalyDetection from './components/AnomalyDetection';
 import ApprovalModal from './components/ApprovalModal';
+import WalletWatchPanel from './components/WalletWatchPanel';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -116,17 +117,7 @@ export default function Home() {
         {/* Rule Settings Tab */}
         {activeTab === 'rules' && (
           <div className="bg-slate-900/50 rounded-lg border asguard-border p-8 backdrop-blur">
-            <div className="max-w-2xl">
-              <h3 className="text-2xl font-bold text-slate-100 mb-6">Advanced Rule Configuration</h3>
-              <div className="space-y-6">
-                <div className="p-4 bg-slate-800/50 rounded-lg border asguard-border">
-                  <p className="text-slate-300">
-                    Configure global security policies, agent whitelisting, and custom threat detection rules.
-                  </p>
-                </div>
-                <p className="text-sm text-slate-400">Pending agent approvals appear here as they arrive on the authenticated live bridge.</p>
-              </div>
-            </div>
+            <div className="min-h-[36rem]"><SecurityRules apiToken={apiToken} /></div>
           </div>
         )}
 
@@ -159,6 +150,8 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {activeTab === 'wallet-watch' && <WalletWatchPanel apiToken={apiToken} />}
       </div>
 
       {/* Approval Modal */}

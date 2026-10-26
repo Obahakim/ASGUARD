@@ -271,6 +271,7 @@ export interface SignApprovalRequest {
 export interface SignApprovalResponse {
 	status: 'approved' | 'pending_hitl' | 'rejected'; decision_id?: string; intent_id?: string;
 	attestation?: ApprovalAttestation; reason?: string; anomaly?: EvaluationResult; request_id?: string;
+	preflight?: TransactionPreflight;
 }
 export interface NotifierAlert {
 	agent_id: string; score: number; action: string; amount_usd?: number; request_id: string;

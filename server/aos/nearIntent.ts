@@ -178,7 +178,7 @@ function inferNearIntentChain(asset: string): string | undefined {
   const tokenId = asset.startsWith('nep141:') ? asset.slice('nep141:'.length) : '';
   const prefixes: Record<string, string> = {
     arb: 'arbitrum', eth: 'ethereum', base: 'base', bsc: 'bnb', btc: 'bitcoin',
-    sol: 'solana', xrp: 'xrp', doge: 'dogecoin', sui: 'sui', apt: 'aptos',
+    xrp: 'xrp', doge: 'dogecoin', sui: 'sui', apt: 'aptos',
   };
   const prefix = tokenId.match(/^([a-z]+)-/)?.[1];
   return prefix ? prefixes[prefix] : undefined;
@@ -302,7 +302,7 @@ export function evaluateNearIntentPolicy(
   }
   if (normalized.containsOpaqueExtensions) humanReviewReasons.push('opaque_intent_extensions');
   if (movement.destination_chain && ![
-    'near', 'arbitrum', 'ethereum', 'base', 'bnb', 'bitcoin', 'solana', 'xrp', 'dogecoin', 'sui', 'aptos',
+    'near', 'arbitrum', 'ethereum', 'base', 'bnb', 'bitcoin', 'xrp', 'dogecoin', 'sui', 'aptos',
   ].includes(movement.destination_chain.toLowerCase())) humanReviewReasons.push('unsupported_destination_chain');
   if (policy.allowed_intent_hours_utc?.length && !policy.allowed_intent_hours_utc.includes(now.getUTCHours())) {
     blockedReasons.push('outside_allowed_time_window');
