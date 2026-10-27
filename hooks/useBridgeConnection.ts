@@ -32,7 +32,14 @@ export function useBridgeConnection(
 ): UseBridgeConnection {
   const {
     url = typeof window !== 'undefined'
-      ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080/ws`
+      ? (() => {
+          const base = process.env.NEXT_PUBLIC_ASGUARD_API_URL || `${window.location.protocol}//${window.location.hostname}:8080`;
+          const endpoint = new URL(base);
+          endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+          endpoint.pathname = '/ws';
+          endpoint.search = '';
+          return endpoint.toString();
+        })()
       : 'ws://localhost:8080/ws',
     eventTypes = EMPTY_EVENT_TYPES,
     autoConnect = true,
@@ -45,13 +52,14 @@ export function useBridgeConnection(
   const [events, setEvents] = useState<Event[]>([]);
   const [lastEvent, setLastEvent] = useState<Event | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 10;
+  const enabledRef = useRef(autoConnect);
   const reconnectDelay = 3000; // 3 seconds
 
   /**
    * Connect to WebSocket bridge
    */
   const connect = useCallback(async () => {
+    if (!enabledRef.current) return;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return; // Already connected
     }
@@ -61,10 +69,10 @@ export function useBridgeConnection(
         throw new Error('A one-time WebSocket ticket provider is required.');
       }
       const ticket = await getWebSocketTicket();
+      if (!enabledRef.current) return;
       const ws = new WebSocket(url, ['asguard.v1', `asguard-ticket.${ticket}`]);
 
       ws.addEventListener('open', () => {
-        console.log('[useBridgeConnection] Connected to bridge');
         setIsConnected(true);
         reconnectAttemptsRef.current = 0;
 
@@ -101,42 +109,28 @@ export function useBridgeConnection(
             }
           }
         } catch (error) {
-          console.error(
-            '[useBridgeConnection] Error processing message:',
-            error
-          );
+          setIsConnected(false);
         }
       });
 
       ws.addEventListener('close', () => {
-        console.log('[useBridgeConnection] Disconnected from bridge');
         setIsConnected(false);
-
-        // Attempt to reconnect
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          reconnectAttemptsRef.current++;
-          const delay = reconnectDelay * reconnectAttemptsRef.current;
-          console.log(
-            `[useBridgeConnection] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`
-          );
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            void connect();
-          }, delay);
-        } else {
-          console.error(
-            '[useBridgeConnection] Max reconnection attempts reached'
-          );
-        }
+        if (!enabledRef.current) return;
+        reconnectAttemptsRef.current++;
+        const delay = Math.min(30_000, reconnectDelay * reconnectAttemptsRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => { void connect(); }, delay);
       });
 
-      ws.addEventListener('error', (error) => {
-        console.error('[useBridgeConnection] WebSocket error:', error);
+      ws.addEventListener('error', () => {
+        setIsConnected(false);
       });
 
       wsRef.current = ws;
     } catch (error) {
-      console.error('[useBridgeConnection] Connection error:', error);
+        if (!enabledRef.current) return;
+        reconnectAttemptsRef.current++;
+        const delay = Math.min(30_000, reconnectDelay * reconnectAttemptsRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => { void connect(); }, delay);
     }
   }, [url, eventTypes, onEvent, getWebSocketTicket]);
 
@@ -197,9 +191,7 @@ export function useBridgeConnection(
           })
         );
       } else {
-        console.warn(
-          '[useBridgeConnection] Cannot send message: WebSocket not connected'
-        );
+        setIsConnected(false);
       }
     },
     []
@@ -209,11 +201,16 @@ export function useBridgeConnection(
    * Auto-connect on mount, disconnect on unmount
    */
   useEffect(() => {
+    enabledRef.current = autoConnect;
     if (autoConnect) {
       void connect();
+    } else {
+      setEvents([]);
+      setLastEvent(null);
     }
 
     return () => {
+      enabledRef.current = false;
       disconnect();
     };
   }, [autoConnect, connect, disconnect]);

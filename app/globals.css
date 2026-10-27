@@ -54,6 +54,30 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.1);
 }
 
+.field {
+  display: block;
+  width: 100%;
+  margin-top: 0.375rem;
+  border: 1px solid #d6dee6;
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 0.625rem 0.75rem;
+  color: #20384b;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  outline: none;
+}
+
+.field:focus {
+  border-color: #557d90;
+  box-shadow: 0 0 0 2px #dce9ee;
+}
+
+.field:disabled {
+  cursor: not-allowed;
+  background: #f1f3f5;
+}
+
 .asguard-glow-green {
   box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
 }
