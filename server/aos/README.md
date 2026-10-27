@@ -1,14 +1,10 @@
-# AOS runtime integration
+# ASGUARD runtime integration
 
-This folder contains runtime integration code used by ASGUARD.
+This folder contains generic runtime helpers used by the NEAR-native ASGUARD control plane.
 
-## Components
-- capabilityManager.ts: runtime capability gating for policy, event, HITL, and audit actions.
-- runtimeBridge.ts: lightweight runtime bridge abstraction for daemon connectivity.
-- runtimeConfig.ts: shared runtime configuration surfaced to the backend.
-- providerRegistry.ts: registry for local, remote, and adapter-backed providers.
-- unicityAdapter.ts: adapter that builds a Unicity/Sphere runtime blueprint for the backend.
+- `capabilityManager.ts` gates policy, event, HITL, and audit actions.
+- `runtimeBridge.ts` provides the local runtime connection abstraction.
+- `runtimeConfig.ts` exposes the configured ASGUARD runtime name and supported capabilities.
+- `providerRegistry.ts` manages providers used by active ASGUARD integrations.
 
-## Integration notes
-- The backend health and stats endpoints expose runtime configuration, provider definitions, and the current Unicity blueprint.
-- Provider adapters can be registered at runtime via the provider registry and can optionally expose a health probe.
+Health and stats report runtime configuration, registered providers, NEAR RPC health, and configured NEAR Intents and Chain Signatures endpoints.

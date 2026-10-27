@@ -1,6 +1,6 @@
 /**
  * Asguard WebSocket Bridge
- * Real-time communication layer between astridd and the web dashboard
+ * Real-time communication layer between ASGUARD and the operator dashboard
  */
 
 import { Server as HTTPServer } from 'http';

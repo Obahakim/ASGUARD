@@ -1,10 +1,11 @@
 /**
  * Asguard Policy Store
- * Manages read/write of policy configuration from ~/.astrid/asguard_policy.json
+ * Manages read/write of policy configuration from ~/.asguard/asguard_policy.json
  */
 
 import fs from 'fs';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'path';
 import { AsguardPolicy } from './types';
 
@@ -57,10 +58,9 @@ export class PolicyStore {
   private watchers: ((policy: AsguardPolicy) => void)[] = [];
 
   constructor(policyPath?: string) {
-    // Resolve to ~/.astrid/asguard_policy.json
-    const homeDir = process.env.HOME || process.env.USERPROFILE || '/root';
-    const astridDir = path.join(homeDir, '.astrid');
-    this.policyPath = policyPath ?? path.join(astridDir, 'asguard_policy.json');
+    // Resolve to ~/.asguard/asguard_policy.json on the current platform.
+    const dataDir = path.join(os.homedir(), '.asguard');
+    this.policyPath = policyPath ?? path.join(dataDir, 'asguard_policy.json');
 
     // Initialize with default policy
     this.policy = this.getDefaultPolicy();
@@ -96,13 +96,13 @@ export class PolicyStore {
   }
 
   /**
-   * Ensure .astrid directory exists
+   * Ensure the policy data directory exists
    */
   private ensureDirectory(): void {
-    const astridDir = path.dirname(this.policyPath);
-    if (!fs.existsSync(astridDir)) {
-      fs.mkdirSync(astridDir, { recursive: true, mode: 0o700 });
-      console.log(`[PolicyStore] Created directory: ${astridDir}`);
+    const dataDir = path.dirname(this.policyPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+      console.log(`[PolicyStore] Created directory: ${dataDir}`);
     }
   }
 

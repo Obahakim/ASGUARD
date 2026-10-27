@@ -5,7 +5,7 @@ export interface RuntimeConfig {
 }
 
 export const runtimeConfig: RuntimeConfig = {
-  runtimeName: process.env.ASGUARD_RUNTIME || 'astrid',
+  runtimeName: process.env.ASGUARD_RUNTIME || 'asguard',
   bridgeType: 'http',
   capabilities: ['policy_management', 'event_monitoring', 'hitl_approval'],
 };

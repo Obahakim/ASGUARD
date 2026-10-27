@@ -25,8 +25,6 @@ import { runtimeBridge } from './aos/runtimeBridge';
 import { auditAnchor } from './aos/auditAnchor';
 import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
-import { UnicityAdapter } from './aos/unicityAdapter';
-import { createWalletChallenge, verifyWalletChallenge } from './aos/agentSphereAuth';
 import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
 import { nearAdapter } from './aos/nearAdapter';
@@ -44,7 +42,7 @@ import { NearWalletWatchStore, NearWalletWatcher, type NearWalletWatchStatus, ty
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
 const HOST = process.env.ASGUARD_HOST || 'localhost';
-const runtimeName = process.env.ASGUARD_RUNTIME || 'astrid';
+const runtimeName = process.env.ASGUARD_RUNTIME || 'asguard';
 process.env.ASGUARD_RUNTIME = runtimeName;
 const apiAuthenticator = new ApiAuthenticator(parseApiCredentials());
 const allowedOrigins = new Set(
@@ -56,7 +54,6 @@ const allowedOrigins = new Set(
 
 const capabilityManager = new CapabilityManager(defaultCapabilities);
 runtimeBridge.connect();
-const unicityAdapter = new UnicityAdapter();
 
 // Initialize Express app
 const app = express();
@@ -317,25 +314,6 @@ app.get('/api/approvals/:request_id', apiAuthenticator.requireAnyRole('runtime',
   res.json(status);
 });
 
-// AgentSphere wallet authentication. Challenge responses are single-use and fail closed.
-app.post('/api/auth/challenge', (req: Request, res: Response) => {
-  try {
-    const { wallet_address, origin } = req.body as { wallet_address?: string; origin?: string };
-    res.json(createWalletChallenge(wallet_address ?? '', origin ?? ''));
-  } catch (error) {
-    res.status(400).json({ success: false, error: String(error) });
-  }
-});
-
-app.post('/api/auth/verify', async (req: Request, res: Response) => {
-  try {
-    const operator = await verifyWalletChallenge(req.body);
-    res.json({ success: true, operator });
-  } catch (error) {
-    res.status(401).json({ success: false, error: String(error) });
-  }
-});
-
 app.post('/api/auth/ws-ticket', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor', 'runtime'), (req: Request, res: Response) => {
   try {
     if (!req.asguardIdentity) {
@@ -390,12 +368,10 @@ app.get('/api/transactions/:id', apiAuthenticator.requireAnyRole('admin', 'opera
 // Health check endpoint
 app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
-    const blueprint = await unicityAdapter.buildBlueprint();
     const chain = await nearAdapter.health();
     const response: HealthCheckResponse & {
       runtimeConfig: typeof runtimeConfig;
       providers: ReturnType<typeof providerRegistry.list>;
-      unicity: Awaited<ReturnType<UnicityAdapter['buildBlueprint']>>;
       chain: Awaited<ReturnType<typeof nearAdapter.health>>;
       wallet_watch: NearWalletWatchStatus;
       near: { rpc_url: string; intents_api_url: string; intents_verifier: string; chain_signatures_contract: string };
@@ -408,7 +384,6 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
       capabilities: capabilityManager.list(),
       runtimeConfig,
       providers: providerRegistry.list(),
-      unicity: blueprint,
       chain,
       wallet_watch: walletWatcher.status(),
       near: {
@@ -420,7 +395,7 @@ app.get('/api/health', apiAuthenticator.requireAnyRole('admin', 'operator', 'aud
     };
     res.json(response);
   } catch (error) {
-    logger.error('[Server] Error building Unicity blueprint:', { error: String(error) });
+    logger.error('[Server] NEAR health check failed:', { error: String(error) });
     res.status(500).json({
       status: 'degraded',
       daemon_connected: runtimeBridge.isConnected(),
@@ -771,15 +746,16 @@ app.post('/api/events/security-violation', apiAuthenticator.requireAnyRole('runt
 // Get server stats
 app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), async (req: Request, res: Response) => {
   try {
-    const blueprint = await unicityAdapter.buildBlueprint();
     const chain = await nearAdapter.health();
     res.json({
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
       uptime_ms: process.uptime() * 1000,
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
       providers: providerRegistry.list(),
-      unicity: blueprint,
       chain,
+      wallet_watch: walletWatcher.status(),
       near: {
         rpc_url: nearAdapter.rpcUrl,
         intents_api_url: nearAdapter.intentsApiUrl,
@@ -788,13 +764,16 @@ app.get('/api/stats', apiAuthenticator.requireAnyRole('admin', 'operator', 'audi
       },
     });
   } catch (error) {
-    logger.error('[Server] Error building Unicity blueprint for stats:', { error: String(error) });
-    res.status(500).json({
+    logger.error('[Server] Error collecting NEAR stats:', { error: String(error) });
+    res.status(503).json({
       connected_clients: bridge.getClientCount(),
       recent_events: bridge.getRecentEvents(10),
       uptime_ms: process.uptime() * 1000,
+      runtime: runtimeName,
+      capabilities: capabilityManager.list(),
       providers: providerRegistry.list(),
       chain: await nearAdapter.health(),
+      wallet_watch: walletWatcher.status(),
       near: {
         rpc_url: nearAdapter.rpcUrl,
         intents_api_url: nearAdapter.intentsApiUrl,

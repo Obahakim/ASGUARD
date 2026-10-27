@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Asguard - AI Agent Security Dashboard",
-  description: "Local AI agent security and regulation system for the Astrid/Unicity ecosystem",
+  description: "Non-custodial NEAR approval and audit control plane for agent value movement",
   generator: 'v0.app'
 };
 

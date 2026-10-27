@@ -35,11 +35,8 @@ yarn-error.log*
 /audit_chain.json
 /asguard_policy.json
 
-# local wallet and runtime artifacts
-/.sphere-data/
-/.sphere-tokens/
-/.sphere-mainnet-data/
-.astrid/
+# local ASGUARD state
+.asguard/
 
 # local logs
 *.log

@@ -59,7 +59,7 @@ Wallet watch is secondary, read-only monitoring for registered public NEAR accou
 
 ## Operations
 
-Persisted audit, policy, agent profiles, transaction intents, and wallet watches default under `~/.astrid` (or configured `ASGUARD_*_PATH`). Back up the directory with a consistent filesystem snapshot and restrictive permissions. Keep the audit key separate from backups; restoring the original key is required to verify existing HMAC audit entries. Rotate the audit key only with a planned maintenance procedure and archive the old key securely for historical verification. Startup verifies the audit chain and rejects tampering. Monitor `/api/health`, audit diagnostics, pending HITL age, and wallet-watch health. `/api/health` reflects configured NEAR RPC and watcher health.
+Persisted audit, policy, agent profiles, transaction intents, and wallet watches default under `~/.asguard` (or configured `ASGUARD_*_PATH`). Back up the directory with a consistent filesystem snapshot and restrictive permissions. Keep the audit key separate from backups; restoring the original key is required to verify existing HMAC audit entries. Rotate the audit key only with a planned maintenance procedure and archive the old key securely for historical verification. Startup verifies the audit chain and rejects tampering. Monitor `/api/health`, audit diagnostics, pending HITL age, and wallet-watch health. `/api/health` reflects configured NEAR RPC and watcher health.
 
 ## Scope
 

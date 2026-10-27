@@ -87,7 +87,7 @@ export class NearWalletWatchStore {
   private wallets: WatchedNearWallet[] = [];
   private activity: WatchedNearActivity[] = [];
 
-  constructor(filePath = process.env.ASGUARD_WATCHED_WALLETS_PATH || path.join(os.homedir(), '.astrid', 'watched_wallets.json')) {
+  constructor(filePath = process.env.ASGUARD_WATCHED_WALLETS_PATH || path.join(os.homedir(), '.asguard', 'watched_wallets.json')) {
     this.filePath = filePath;
     this.load();
   }

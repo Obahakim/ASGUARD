@@ -281,11 +281,3 @@ export interface NotifierAlert {
 	requires_hitl?: boolean;
 }
 export type ApprovalDecisionAction = 'approve_once' | 'approve_session' | 'deny_terminate';
-
-export interface AgentSphereOperator {
-	wallet_address: string;
-	role: 'operator';
-	session_id: string;
-	authenticated_at: string;
-	expires_at: string;
-}

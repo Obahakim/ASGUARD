@@ -24,7 +24,7 @@ export interface ProfilePersistence {
 export class JsonProfilePersistence implements ProfilePersistence {
   private readonly filePath: string;
 
-  constructor(filePath = process.env.ASGUARD_AGENT_PROFILES_PATH || path.join(os.homedir(), '.astrid', 'agent_profiles.json')) {
+  constructor(filePath = process.env.ASGUARD_AGENT_PROFILES_PATH || path.join(os.homedir(), '.asguard', 'agent_profiles.json')) {
     this.filePath = filePath;
   }
 

@@ -18,7 +18,7 @@ export class AuditChain {
 
   constructor(chainFilePath?: string) {
     this.signingKey = getAuditSigningKey();
-    this.chainFile = chainFilePath || process.env.ASGUARD_AUDIT_CHAIN_PATH || path.join(os.homedir(), '.astrid', 'audit_chain.json');
+    this.chainFile = chainFilePath || process.env.ASGUARD_AUDIT_CHAIN_PATH || path.join(os.homedir(), '.asguard', 'audit_chain.json');
     this.loadChain();
     if (!this.verifyChainIntegrity()) {
       throw new Error('Audit chain integrity check failed during startup.');

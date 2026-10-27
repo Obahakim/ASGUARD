@@ -8,8 +8,8 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_PORT=8080
 FRONTEND_PORT=3000
-POLICY_FILE="$HOME/.astrid/asguard_policy.json"
-AUDIT_FILE="$HOME/.astrid/audit_chain.json"
+POLICY_FILE="$HOME/.asguard/asguard_policy.json"
+AUDIT_FILE="$HOME/.asguard/audit_chain.json"
 
 # Color codes
 RED='\033[0;31m'
@@ -195,8 +195,8 @@ cmd_uninstall() {
             log_success "Removed CLI command"
         fi
         
-        # Keep policy and audit files in ~/.astrid
-        log_info "Keeping policy and audit files in $HOME/.astrid"
+        # Keep policy and audit files in ~/.asguard
+        log_info "Keeping policy and audit files in $HOME/.asguard"
         log_success "Uninstallation complete"
     else
         log_info "Uninstallation cancelled"
@@ -225,7 +225,7 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         cat << 'HELP'
-Asguard CLI - Local Astrid Daemon Integration
+ASGUARD CLI - NEAR approval and audit control plane
 
 USAGE:
   asguard <command> [options]

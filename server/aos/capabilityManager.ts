@@ -34,7 +34,7 @@ export class CapabilityManager {
     }
 
     if (options.requireRuntime) {
-      return process.env.ASGUARD_RUNTIME === 'astrid';
+      return process.env.ASGUARD_RUNTIME === 'asguard';
     }
 
     return true;

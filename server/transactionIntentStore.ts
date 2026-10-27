@@ -5,7 +5,7 @@ import os from 'node:os';
 import type { TransactionIntent, TransactionIntentStatus, TransactionPreflight } from './types';
 
 const intents = new Map<string, TransactionIntent>();
-const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.astrid', 'transaction_intents.json');
+const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.asguard', 'transaction_intents.json');
 
 function persistLocalIntents(): void {
   const directory = path.dirname(intentFile);
