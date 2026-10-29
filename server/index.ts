@@ -885,6 +885,33 @@ app.get('/api/anomaly/audit-trail', apiAuthenticator.requireAnyRole('admin', 'op
   }
 });
 
+// Human approval decisions can be made by an authenticated dashboard operator.
+app.get('/api/hitl/pending', apiAuthenticator.requireAnyRole('admin', 'operator'), (_req: Request, res: Response) => {
+  res.json({ success: true, requests: [...hitlHandler.getPendingRequests().values()].map(({ event }) => event) });
+});
+
+app.post('/api/hitl/:request_id/respond', apiAuthenticator.requireAnyRole('admin', 'operator'), (req: Request, res: Response) => {
+  const { action, reason } = req.body as { action?: string; reason?: string };
+  if (action !== 'allow_once' && action !== 'allow_session' && action !== 'deny_terminate') {
+    res.status(400).json({ success: false, error: 'Invalid HITL action.' });
+    return;
+  }
+  const decision = hitlHandler.respond({ request_id: req.params.request_id, action, reason: reason || 'Dashboard operator decision', actor_id: req.asguardIdentity?.id });
+  if (!decision) {
+    res.status(404).json({ success: false, error: 'Approval request is no longer pending.' });
+    return;
+  }
+  auditAnchor.record('hitl_decision', {
+    request_id: req.params.request_id, action, actor_id: req.asguardIdentity?.id, runtime: runtimeName,
+  });
+  bridge.broadcastEvent({
+    type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: decision.agent_id, action: 'HITL Decision Applied', resource: req.params.request_id,
+    status: action === 'deny_terminate' ? 'failure' : 'success', details: { action, actor_id: req.asguardIdentity?.id, reason },
+  });
+  res.json({ success: true, decision });
+});
+
 // 404 handler
 app.use((req: Request, res: Response) => {
   res.status(404).json({
@@ -912,33 +939,6 @@ const shutdown = () => {
     process.exit(0);
   });
 };
-
-// Human approval decisions can be made by an authenticated dashboard operator.
-app.get('/api/hitl/pending', apiAuthenticator.requireAnyRole('admin', 'operator'), (_req: Request, res: Response) => {
-  res.json({ success: true, requests: [...hitlHandler.getPendingRequests().values()].map(({ event }) => event) });
-});
-
-app.post('/api/hitl/:request_id/respond', apiAuthenticator.requireAnyRole('admin', 'operator'), (req: Request, res: Response) => {
-  const { action, reason } = req.body as { action?: string; reason?: string };
-  if (action !== 'allow_once' && action !== 'allow_session' && action !== 'deny_terminate') {
-    res.status(400).json({ success: false, error: 'Invalid HITL action.' });
-    return;
-  }
-  const decision = hitlHandler.respond({ request_id: req.params.request_id, action, reason: reason || 'Dashboard operator decision', actor_id: req.asguardIdentity?.id });
-  if (!decision) {
-    res.status(404).json({ success: false, error: 'Approval request is no longer pending.' });
-    return;
-  }
-  auditAnchor.record('hitl_decision', {
-    request_id: req.params.request_id, action, actor_id: req.asguardIdentity?.id, runtime: runtimeName,
-  });
-  bridge.broadcastEvent({
-    type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
-    agent_id: decision.agent_id, action: 'HITL Decision Applied', resource: req.params.request_id,
-    status: action === 'deny_terminate' ? 'failure' : 'success', details: { action, actor_id: req.asguardIdentity?.id, reason },
-  });
-  res.json({ success: true, decision });
-});
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
