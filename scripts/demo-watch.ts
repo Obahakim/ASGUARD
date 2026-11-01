@@ -1,47 +1,73 @@
-function credentials(): Array<{ token?: string; roles?: string[] }> {
-  try { return JSON.parse(process.env.ASGUARD_API_CREDENTIALS ?? '[]') as Array<{ token?: string; roles?: string[] }>; }
-  catch { throw new Error('ASGUARD_API_CREDENTIALS must be valid JSON for demo:watch.'); }
-}
+import { runDemo } from './demo-common';
 
-const configuredCredentials = credentials();
-const runtimeToken = process.env.ASGUARD_DEMO_TOKEN || configuredCredentials.find((item) => item.roles?.includes('runtime'))?.token;
-const readToken = configuredCredentials.find((item) => ['admin', 'operator', 'auditor'].some((role) => item.roles?.includes(role)))?.token;
-const accountId = process.env.ASGUARD_WATCH_DEMO_ACCOUNT;
-const agentId = process.env.ASGUARD_DEMO_AGENT_ID || 'near-watch-demo';
-const network = `near:${process.env.ASGUARD_NEAR_NETWORK || 'testnet'}`;
-const baseUrl = (process.env.ASGUARD_API_URL || `http://localhost:${process.env.ASGUARD_PORT || '8080'}`).replace(/\/$/, '');
-if (!runtimeToken || Buffer.byteLength(runtimeToken, 'utf8') < 32) throw new Error('Configure a runtime credential or ASGUARD_DEMO_TOKEN for demo:watch.');
-if (!readToken || Buffer.byteLength(readToken, 'utf8') < 32) throw new Error('Configure an admin, operator, or auditor credential in ASGUARD_API_CREDENTIALS to read watch activity.');
-if (!accountId) throw new Error('Set ASGUARD_WATCH_DEMO_ACCOUNT to the public NEAR account ID to watch.');
-
-async function main(): Promise<void> {
-  const registered = await fetch(`${baseUrl}/api/wallet-watch`, {
-    method: 'POST', headers: { Authorization: `Bearer ${runtimeToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent_id: agentId, account_id: accountId, network, label: 'Judge wallet watch' }),
-  });
-  const registeredBody = await registered.json() as { wallet?: { id: string; account_id: string; network: string }; error?: string };
-  if (!registered.ok || !registeredBody.wallet) throw new Error(registeredBody.error || `Wallet registration failed with HTTP ${registered.status}.`);
-  console.log('Registered public account watch:', JSON.stringify(registeredBody.wallet));
-
-  const headers = { Authorization: `Bearer ${readToken}` };
-  const walletList = await fetch(`${baseUrl}/api/wallet-watch?agent_id=${encodeURIComponent(agentId)}`, { headers });
-  const listBody = await walletList.json() as { wallets?: unknown[]; status?: unknown; error?: string };
-  if (!walletList.ok) throw new Error(listBody.error || `Wallet list failed with HTTP ${walletList.status}.`);
-  console.log('Watcher status and registered accounts:', JSON.stringify({ status: listBody.status, wallets: listBody.wallets }, null, 2));
-
-  console.log('Polling local activity history for up to 35 seconds...');
-  const endAt = Date.now() + 35_000;
-  let activity: unknown[] = [];
-  while (Date.now() < endAt) {
-    const response = await fetch(`${baseUrl}/api/wallet-watch/activity?watch_id=${encodeURIComponent(registeredBody.wallet.id)}`, { headers });
-    const body = await response.json() as { activity?: unknown[]; error?: string };
-    if (!response.ok) throw new Error(body.error || `Activity query failed with HTTP ${response.status}.`);
-    activity = body.activity ?? [];
-    if (activity.length > 0) break;
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
+void runDemo('demo:watch', async (config) => {
+  const accountId = process.env.ASGUARD_WATCH_DEMO_ACCOUNT?.trim();
+  if (!accountId) {
+    throw new Error('Set ASGUARD_WATCH_DEMO_ACCOUNT in .env to a public NEAR testnet account ID, then retry. Do not provide a private key or seed phrase.');
   }
-  console.log(JSON.stringify({ observed_activity: activity }, null, 2));
-  if (activity.length === 0) console.log('No matching activity has been observed in the scan window; the watcher remains registered and continues polling.');
-}
+  const agentId = process.env.ASGUARD_DEMO_AGENT_ID || 'near-watch-demo';
+  const registerHeaders = {
+    Authorization: `Bearer ${config.runtimeToken}`,
+    'Content-Type': 'application/json',
+  };
 
-main().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
+  let registered: Response;
+  try {
+    registered = await fetch(`${config.apiUrl}/api/wallet-watch`, {
+      method: 'POST',
+      headers: registerHeaders,
+      body: JSON.stringify({
+        agent_id: agentId,
+        account_id: accountId,
+        network: config.network,
+        label: 'Judge wallet watch',
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new Error(`Backend request failed during wallet-watch registration. Confirm that "npm run dev:backend" is still running at ${config.apiUrl}.`);
+  }
+  const registeredBody = await registered.json().catch(() => ({})) as {
+    wallet?: { id: string; account_id: string; network: string };
+    error?: string;
+  };
+  if (!registered.ok || !registeredBody.wallet) {
+    throw new Error(registeredBody.error || `Wallet registration failed with HTTP ${registered.status}.`);
+  }
+  console.log('Registered public testnet account watch:', JSON.stringify(registeredBody.wallet));
+
+  let walletResponse: Response;
+  let activityResponse: Response;
+  try {
+    [walletResponse, activityResponse] = await Promise.all([
+      fetch(`${config.apiUrl}/api/wallet-watch?agent_id=${encodeURIComponent(agentId)}`, {
+        headers: { Authorization: `Bearer ${config.readToken}` },
+        signal: AbortSignal.timeout(10_000),
+      }),
+      fetch(`${config.apiUrl}/api/wallet-watch/activity?watch_id=${encodeURIComponent(registeredBody.wallet.id)}`, {
+        headers: { Authorization: `Bearer ${config.readToken}` },
+        signal: AbortSignal.timeout(10_000),
+      }),
+    ]);
+  } catch {
+    throw new Error(`Backend request failed while reading wallet-watch status. Confirm that "npm run dev:backend" is still running at ${config.apiUrl}.`);
+  }
+  const [walletBody, activityBody] = await Promise.all([
+    walletResponse.json().catch(() => ({})) as Promise<{ wallets?: unknown[]; status?: unknown; error?: string }>,
+    activityResponse.json().catch(() => ({})) as Promise<{ activity?: unknown[]; error?: string }>,
+  ]);
+  if (!walletResponse.ok) throw new Error(walletBody.error || `Wallet list failed with HTTP ${walletResponse.status}.`);
+  if (!activityResponse.ok) throw new Error(activityBody.error || `Activity query failed with HTTP ${activityResponse.status}.`);
+
+  const activity = activityBody.activity ?? [];
+  console.log(JSON.stringify({
+    watcher_status: walletBody.status,
+    registered_wallets: walletBody.wallets ?? [],
+    observed_activity: activity,
+  }, null, 2));
+  if (activity.length === 0) {
+    console.log('No matching activity is recorded yet. Registration and local history queries succeeded; the read-only watcher continues in the backend.');
+  } else {
+    console.log('Existing observed activity is shown above. The watcher is read-only and submits no transactions.');
+  }
+});

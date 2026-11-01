@@ -24,34 +24,36 @@ REST and MCP expose NEAR Intent and Chain Signature approval requests, approval 
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Replace every credential example with independent random values; `ASGUARD_API_CREDENTIALS` and `ASGUARD_AUDIT_KEY` are required and startup fails if missing or weak. Configure `ASGUARD_NEAR_NETWORK`, HTTPS `ASGUARD_NEAR_RPC_URL`, Intents verifier/API, and signer contract for the deployment. Testnet is the default. Set `ASGUARD_ALLOWED_ORIGINS` to dashboard origins. Use the actual configured paths and polling interval shown in `.env.example`; no database configuration is used.
+Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. Generate each value with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. The backend fails early if required credentials are missing or weak. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
 
 ## Run locally
+
+Use Node.js 20.9 or newer. After creating `.env` as described above, run:
 
 ```sh
 npm install
 npm run dev:backend
+```
+
+In a second terminal, start the dashboard:
+
+```sh
 npm run dev:frontend
-npm test
-npm run build
 ```
 
 The backend is `http://localhost:8080` and dashboard is `http://localhost:3000` by default. Authenticate the dashboard with an admin/operator credential.
 
-## Demo for judges
+## How to try it
 
-Start the backend and frontend, then use the dashboard’s **Approvals** tab to resolve HITL requests. Configure `.env` with valid local runtime and operator credentials first.
+Start both services as above and use **Approvals** in the dashboard when a request enters HITL. Each command prints its backend/network preflight and expected outcome:
 
-| Command | Demonstrates |
-| --- | --- |
-| `npm run demo:near:approve` | Low-risk NEAR Intent request and verified host callback; stops before signing/submitting. |
-| `npm run demo:near:hitl` | High-risk request; shows request ID and waits for dashboard decision. |
-| `npm run demo:near:block` | Expired intent rejection and preflight reason. |
-| `npm run demo:near` | Runs the low-risk approval path. |
-| `npm run demo:agent-guard` | Pending/deny blocks and approval+verification invokes a callback with no real signing. |
-| `npm run demo:watch` | Registers `ASGUARD_WATCH_DEMO_ACCOUNT`, then shows observed activity (if any) from the public RPC. |
+1. `npm run demo:near:approve` → submits a low-risk unsigned testnet intent for preflight; see an approved status and verified callback, or resolve the request in the dashboard if policy or missing/stale price data requires HITL.
+2. `npm run demo:near:hitl` → see a pending request ID; approve or deny it in **Approvals**. Only approval reaches the verified host callback.
+3. `npm run demo:near:block` → see the expired intent rejected with its decode/preflight reason.
+4. `npm run demo:agent-guard` → deny the first request and approve the second in **Approvals**; see denial block the callback and verified approval reach it.
+5. Set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID, then run `npm run demo:watch` → see the registered watch and activity history (an empty history is valid).
 
-Each script prints request/status/preflight context and fails clearly when credentials or the backend are unavailable. No demo submits a real transaction.
+Every demo stops before real signing or transaction submission; no private key, mainnet funds, or live fund movement is used. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions. For custom payloads and multi-scenario runs, see [docs/DEMO.md](docs/DEMO.md).
 
 ## Wallet watch
 

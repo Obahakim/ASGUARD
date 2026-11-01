@@ -71,7 +71,7 @@ function validateCredentials(value: unknown): ApiCredential[] {
 
 export function parseApiCredentials(value = process.env.ASGUARD_API_CREDENTIALS): ApiCredential[] {
   if (!value?.trim()) {
-    throw new AuthConfigurationError('ASGUARD_API_CREDENTIALS must be configured before starting the backend.');
+    throw new AuthConfigurationError('ASGUARD_API_CREDENTIALS is missing. Copy .env.example to .env and configure at least one runtime credential and one admin/operator/auditor credential; each token must be at least 32 bytes.');
   }
 
   try {
@@ -80,7 +80,7 @@ export function parseApiCredentials(value = process.env.ASGUARD_API_CREDENTIALS)
     if (error instanceof AuthConfigurationError) {
       throw error;
     }
-    throw new AuthConfigurationError('ASGUARD_API_CREDENTIALS must contain valid JSON.');
+    throw new AuthConfigurationError('ASGUARD_API_CREDENTIALS must contain valid JSON. Copy the example array from .env.example, replace the placeholder values, and restart the backend.');
   }
 }
 

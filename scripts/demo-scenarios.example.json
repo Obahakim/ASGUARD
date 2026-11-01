@@ -1,0 +1,48 @@
+{
+  "scenarios": [
+    {
+      "name": "low-risk-token-diff",
+      "mode": "approve",
+      "riskLevel": "low",
+      "intent": {
+        "intent_type": "token_diff",
+        "origin_asset": "nep141:wrap.near",
+        "destination_asset": "nep141:usdt.tether-token.near",
+        "amount": "1000000000000000000000000",
+        "min_output_amount": "1",
+        "recipient": "demo.near",
+        "destination_chain": "near",
+        "max_slippage_bps": 50
+      }
+    },
+    {
+      "name": "high-risk-reviewed-swap",
+      "mode": "hitl",
+      "riskLevel": "high",
+      "intent": {
+        "intent_type": "token_diff",
+        "origin_asset": "nep141:wrap.near",
+        "destination_asset": "nep141:usdc.near",
+        "amount": "2000000000000000000000000",
+        "min_output_amount": "1",
+        "recipient": "review.near",
+        "destination_chain": "near",
+        "quote_id": "local-demo-quote",
+        "max_slippage_bps": 150
+      }
+    },
+    {
+      "name": "expired-intent-block",
+      "mode": "block",
+      "intent": {
+        "intent_type": "token_diff",
+        "origin_asset": "nep141:wrap.near",
+        "destination_asset": "nep141:usdt.tether-token.near",
+        "amount": "500000000000000000000000",
+        "recipient": "blocked.near",
+        "destination_chain": "near",
+        "max_slippage_bps": 75
+      }
+    }
+  ]
+}
