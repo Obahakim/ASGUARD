@@ -944,6 +944,15 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 // Start server
+httpServer.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`[ASGUARD startup] Port ${PORT} is already in use. Another backend may be running; stop it before starting a second instance.`);
+  } else {
+    console.error('[ASGUARD startup] HTTP server failed to listen.', error);
+  }
+  process.exit(1);
+});
+
 httpServer.listen(Number(PORT), HOST as string, () => {
   logger.success(
     `[Server] Asguard bridge listening on http://${HOST}:${PORT}`
