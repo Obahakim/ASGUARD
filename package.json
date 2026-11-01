@@ -9,9 +9,9 @@
     }
   },
   "scripts": {
-    "dev": "concurrently \"next dev\" \"node --env-file=.env --import tsx --watch scripts/start-backend.ts\"",
+    "dev": "concurrently \"next dev\" \"node --import tsx scripts/watch-backend.ts\"",
     "dev:frontend": "next dev",
-    "dev:backend": "node --env-file=.env --import tsx --watch scripts/start-backend.ts",
+    "dev:backend": "node --import tsx scripts/watch-backend.ts",
     "build": "npm run build:server && npm run build:agent-sdk && npm run build:frontend:types && next build",
     "build:server": "tsc --noEmit -p tsconfig.server.json",
     "build:agent-sdk": "tsc --noEmit -p tsconfig.agent-sdk.json",
