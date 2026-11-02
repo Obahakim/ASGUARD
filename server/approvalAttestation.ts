@@ -212,7 +212,7 @@ export function verifyApprovalAttestation(
 
   if (typeof opts?.maxAmountUsd === 'number') {
     if (typeof attestation.max_amount_usd !== 'number') return { valid: false, reason: 'attested_amount_limit_missing' };
-    if (opts.maxAmountUsd > attestation.max_amount_usd) return { valid: false, reason: 'amount_exceeds_attestation_limit' };
+    if (attestation.max_amount_usd > opts.maxAmountUsd) return { valid: false, reason: 'attested_amount_exceeds_host_limit' };
   }
 
   return { valid: true };

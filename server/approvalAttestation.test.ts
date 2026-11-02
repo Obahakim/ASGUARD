@@ -81,6 +81,36 @@ test('expired approval is rejected', () => {
   assert.equal(result.reason, 'expired');
 });
 
+test('host amount ceiling accepts amounts within the cap and rejects higher HITL amounts', () => {
+  const signingKey = 'host-amount-ceiling-test-key-with-more-than-32-bytes';
+  const issue = (amount?: number) => issueApprovalAttestation({
+    decision_id: `dec_amount_${amount ?? 'missing'}`,
+    intent_id: `intent_amount_${amount ?? 'missing'}`,
+    agent_id: 'amount-agent',
+    network: 'near:testnet',
+    chain: 'near',
+    payload_domain: 'near-intent',
+    payload_hash: 'd'.repeat(64),
+    action: 'approve_once',
+    ...(amount === undefined ? {} : { max_amount_usd: amount }),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    anomaly_score: 0,
+    issued_at: new Date().toISOString(),
+    rules_triggered: [],
+    secret: signingKey,
+  });
+  const verify = (maxAmountUsd: number | undefined) => verifyApprovalAttestation(issue(maxAmountUsd), {
+    signingKey,
+    expectedAgentId: 'amount-agent',
+    maxAmountUsd: 1_000,
+  });
+
+  assert.equal(verify(750).valid, true);
+  assert.equal(verify(1_000).valid, true);
+  assert.deepEqual(verify(1_250), { valid: false, reason: 'attested_amount_exceeds_host_limit' });
+  assert.deepEqual(verify(undefined), { valid: false, reason: 'attested_amount_limit_missing' });
+});
+
 test('NEAR intent attestation binds canonical payload, domain, and derivation path', () => {
   const intent = {
     intent_type: 'swap',
