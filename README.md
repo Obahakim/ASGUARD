@@ -1,12 +1,12 @@
 # ASGUARD
 
-ASGUARD is a non-custodial approval and audit control plane for agent value movement on NEAR. Agents submit the exact unsigned payload, wait for a decision, and verify a short-lived attestation in their trusted host before that host may sign or submit. ASGUARD never accepts keys or seed phrases, signs, submits Intents, runs a solver, relays transactions, or calls Chain Signatures MPC.
+ASGUARD is a non-custodial approval and audit control plane for agent value movement on NEAR. Agents submit the exact unsigned payload, wait for a decision, and verify a short-lived Ed25519 attestation in their trusted host before that host may sign or submit. ASGUARD never accepts keys or seed phrases, signs or submits on-chain transactions or Intents, runs a solver, relays transactions, or calls Chain Signatures MPC.
 
 ## Security flow
 
 `agent/host → ASGUARD policy + preflight → approved attestation | pending HITL | denied → host verifies → host callback may sign/submit`
 
-Timeouts deny. Rejected, blocked, malformed, expired, or unverifiable requests never reach the host callback. Attestations bind the exact payload hash, agent, network/domain, and Chain Signatures derivation path and signer contract where applicable. Use TLS outside local development, distinct high-entropy runtime/admin credentials, and keep the HMAC audit key only in trusted server-side environments.
+Timeouts deny. Rejected, blocked, malformed, expired, or unverifiable requests never reach the host callback. Ed25519 attestations bind the exact payload hash, agent, network/domain, and Chain Signatures derivation path and signer contract where applicable. ASGUARD keeps the attestation private key server-side; hosts receive only the public verification key. The separate HMAC audit key is server-side only and is never used to sign approvals. Use TLS outside local development and distinct high-entropy runtime/admin credentials.
 
 ## NEAR approval paths
 
@@ -24,7 +24,13 @@ REST and MCP expose NEAR Intent and Chain Signature approval requests, approval 
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. Generate each value with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. The backend fails early if required credentials are missing or weak. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
+Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. This HMAC key is only for the audit chain. Generate an Ed25519 attestation key pair before startup; keep its private PEM on the server and provide only the public PEM to trusted hosts. The following creates ignored local-development key files without printing the private key:
+
+```sh
+node --input-type=module -e "import { generateKeyPairSync } from 'node:crypto'; import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('.asguard', { recursive: true }); const { privateKey, publicKey } = generateKeyPairSync('ed25519'); writeFileSync('.asguard/attestation-private.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }); writeFileSync('.asguard/attestation-public.pem', publicKey.export({ type: 'spki', format: 'pem' }));"
+```
+
+The configured key paths must refer to this matching pair. The backend fails early if required credentials or keys are missing or invalid. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
 
 ## Run locally
 
@@ -64,7 +70,7 @@ Wallet watch is secondary, read-only monitoring for registered public NEAR accou
 
 Non-custodial approval and audit control plane for agent value movement on NEAR.
 
-Agents submit the exact unsigned payload, wait for a decision, and verify a short-lived attestation in their trusted host before that host may sign or submit. ASGUARD never accepts keys or seed phrases, never signs, never submits Intents, never runs a solver, never relays transactions, and never calls Chain Signatures MPC.
+Agents submit the exact unsigned payload, wait for a decision, and verify a short-lived Ed25519 attestation in their trusted host before that host may sign or submit. ASGUARD never accepts keys or seed phrases, never signs or submits on-chain transactions or Intents, never runs a solver, never relays transactions, and never calls Chain Signatures MPC.
 
 Repository: https://github.com/Obahakim/ASGUARD
 Problem: Autonomous agents that can move value need a gate that is not the same process that holds the keys.
@@ -96,7 +102,7 @@ agent/host → ASGUARD policy + preflight → approved attestation | pending HIT
 
 Timeouts deny. Rejected, blocked, malformed, expired, or unverifiable requests never reach the host callback. Attestations bind the exact payload hash, agent, network/domain, and Chain Signatures derivation path and signer contract where applicable.
 
-Use TLS outside local development, distinct high-entropy runtime and admin credentials, and keep the HMAC audit key only in trusted server-side environments.
+Use TLS outside local development and distinct high-entropy runtime and admin credentials. Keep the Ed25519 attestation private key and the separate HMAC audit key server-side; distribute only the public attestation key to hosts.
 
 NEAR approval paths
 
@@ -143,11 +149,13 @@ Sensitive routes are role-gated. Durable state uses atomic local JSON files unde
 Configuration
 
 1. Copy `.env.example` to `.env`.
-2. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes:
+2. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. Use the audit key only for audit-chain HMACs; do not provide it to agent hosts.
 
 ```sh
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
+
+Generate the Ed25519 approval key pair using the command in the Configuration section. ASGUARD signs with the private key; the SDK verifies with only the public key.
 
 3. Keep `ASGUARD_NEAR_NETWORK=testnet` for demos. The backend fails early if required credentials are missing or weak. Demos refuse to run on any other network.
 4. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative.

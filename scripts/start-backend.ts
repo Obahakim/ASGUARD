@@ -1,4 +1,5 @@
 import { getAuditSigningKey } from '../server/auditConfig';
+import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 
 function validateEndpoint(name: string, value: string): void {
@@ -17,6 +18,7 @@ async function start(): Promise<void> {
   try {
     parseApiCredentials();
     getAuditSigningKey();
+    validateApprovalKeyPair();
 
     const port = process.env.ASGUARD_PORT || '8080';
     if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65_535) {
@@ -36,6 +38,8 @@ async function start(): Promise<void> {
       console.error('[ASGUARD startup] Copy .env.example to .env, replace each token with a different random value of at least 32 bytes, and restart. Generate values with: node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'hex\'))".');
     } else if (message.includes('ASGUARD_AUDIT_KEY')) {
       console.error('[ASGUARD startup] Set a separate random ASGUARD_AUDIT_KEY of at least 32 bytes in .env, then restart.');
+    } else if (message.includes('ASGUARD_ATTESTATION_')) {
+      console.error('[ASGUARD startup] Configure a matching Ed25519 private/public key pair; keep the private key server-side only.');
     } else {
       console.error('[ASGUARD startup] Correct the named ASGUARD_* setting in .env and retry.');
     }

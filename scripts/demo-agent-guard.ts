@@ -22,7 +22,7 @@ async function attempt(config: DemoConfig, label: string): Promise<AttemptResult
     await withAsguardApproval({
       baseUrl: config.apiUrl,
       token: config.runtimeToken,
-      auditKey: config.auditKey,
+      attestationPublicKey: config.attestationPublicKey,
       agentId: 'asguard-agent-guard-demo',
       agentName: 'Agent Guard Demo',
       action: `agent-guard:${label}`,

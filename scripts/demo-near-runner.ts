@@ -99,7 +99,7 @@ export async function runNearScenario(config: DemoConfig, scenario: NearDemoScen
     await withAsguardApproval({
       baseUrl: config.apiUrl,
       token: config.runtimeToken,
-      auditKey: config.auditKey,
+      attestationPublicKey: config.attestationPublicKey,
       agentId,
       agentName: 'ASGUARD Demo Suite',
       payload: intent,

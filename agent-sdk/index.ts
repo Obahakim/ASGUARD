@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import {
+  parseApprovalPublicKey,
   verifyApprovalAttestation,
   type ApprovalVerificationOptions,
-} from '../server/approvalAttestation';
+} from '../lib/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 
@@ -44,7 +45,7 @@ export interface AsguardApprovalOptions<TPayload> {
   pollIntervalMs?: number;
   timeoutMs?: number;
   onPendingHitl?: (requestId: string) => void | Promise<void>;
-  auditKey: string;
+  attestationPublicKey: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -69,7 +70,8 @@ function validateOptions<TPayload>(options: AsguardApprovalOptions<TPayload>): v
     throw new Error('ASGUARD API connections must use HTTPS outside local development.');
   }
   if (!options.token || Buffer.byteLength(options.token, 'utf8') < 32) throw new Error('A runtime API token of at least 32 bytes is required.');
-  if (Buffer.byteLength(options.auditKey ?? '', 'utf8') < 32) throw new Error('A host-side auditKey of at least 32 bytes is required.');
+  if (!options.attestationPublicKey?.trim()) throw new Error('The ASGUARD Ed25519 attestation public key is required.');
+  parseApprovalPublicKey(options.attestationPublicKey);
   if (!options.agentId.trim() || !options.agentName.trim()) throw new Error('agentId and agentName are required.');
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(options.idempotencyKey)) throw new Error('idempotencyKey must be 8-128 permitted characters.');
   if (!options.network.trim()) throw new Error('network is required.');
@@ -170,7 +172,7 @@ export async function withAsguardApproval<TPayload, TResult>(
   if (Date.now() >= deadline) throw new AsguardApprovalError('ASGUARD approval timed out; host action denied.', 'timeout_deny');
   const attestation = requireAttestation(decision);
   const verification: ApprovalVerificationOptions = {
-    signingKey: options.auditKey,
+    publicKey: options.attestationPublicKey,
     expectedAgentId: options.agentId,
     expectedPayloadHash: payloadHash,
     expectedPayloadDomain: options.payloadDomain,

@@ -5,13 +5,13 @@ The demo commands exercise the local approval API and stop at host-side approval
 ## Setup
 
 1. Use Node.js 20.9 or newer and run `npm install`.
-2. Copy `.env.example` to `.env`. Generate independent random values for each API token and `ASGUARD_AUDIT_KEY`:
+2. Copy `.env.example` to `.env`. Generate independent random values for each API token and `ASGUARD_AUDIT_KEY` (the audit key is not an approval signing key):
 
    ```sh
    node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
    ```
 
-   Configure at least one `runtime` credential and one `admin` or `operator` credential. Keep `ASGUARD_NEAR_NETWORK=testnet`.
+  Configure at least one `runtime` credential and one `admin` or `operator` credential. Generate the Ed25519 key pair using the command in the README Configuration section, keep the private key server-side, and make the public key available to the demo host. Keep `ASGUARD_NEAR_NETWORK=testnet`.
 3. Start `npm run dev:backend` and `npm run dev:frontend` in separate terminals. Resolve HITL requests in the dashboard's **Approvals** tab.
 4. For wallet-watch only, set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID. It is read-only; never enter a private key or seed phrase.
 

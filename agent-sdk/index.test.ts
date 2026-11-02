@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { issueApprovalAttestation } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 import { AsguardApprovalError, withAsguardApproval } from './index';
 
-const key = 'agent-sdk-test-signing-key-long-enough-0001';
+const pair = generateKeyPairSync('ed25519');
+const privateKey = pair.privateKey;
+const attestationPublicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const intent = {
   intent_type: 'token_diff', origin_asset: 'nep141:wrap.near', destination_asset: 'nep141:usdc.near',
   amount: '1000000000000000000000', min_output_amount: '1', recipient: 'alice.near', destination_chain: 'near',
@@ -19,7 +21,7 @@ function approvedResponse(): SignApprovalResponse {
     decision_id: randomUUID(), intent_id: randomUUID(), agent_id: 'test-agent', payload_hash: normalized.payloadHash,
     network: 'near:testnet', chain: 'near', payload_domain: 'near-intent', intent_type: 'token_diff', action: 'approve_once',
     expires_at: new Date(Date.now() + 60_000).toISOString(), issued_at: new Date().toISOString(), anomaly_score: 1,
-    rules_triggered: [], secret: key,
+    rules_triggered: [], privateKey,
   });
   return { status: 'approved', intent_id: attestation.intent_id, decision_id: attestation.decision_id, attestation };
 }
@@ -29,7 +31,7 @@ function options(fetchImpl: typeof fetch, overrides: Record<string, unknown> = {
     baseUrl: 'http://localhost:8080', token: 'runtime-token-that-is-at-least-32-bytes-long', agentId: 'test-agent',
     agentName: 'Test Agent', payload: intent, payloadDomain: 'near-intent' as const, network: 'near:testnet',
     expectedVerifier: 'intents.near', idempotencyKey: randomUUID(), riskLevel: 'low' as const,
-    auditKey: key, fetchImpl, ...overrides,
+    attestationPublicKey, fetchImpl, ...overrides,
   };
 }
 

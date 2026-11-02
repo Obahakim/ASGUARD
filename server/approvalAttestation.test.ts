@@ -1,9 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { assertApprovedThenSign, assertApprovedThenSignChainPayload, assertApprovedThenSignIntent, issueApprovalAttestation, verifyApprovalAttestation, withApprovedChainSignature, withApprovedNearIntent } from './approvalAttestation';
+import { validateApprovalKeyPair } from './attestationConfig';
 import { normalizeNearIntent } from './aos/nearIntent';
+
+const pair = generateKeyPairSync('ed25519');
+const privateKey = pair.privateKey;
+const publicKey = pair.publicKey;
+
+test('server accepts only a matching Ed25519 attestation keypair', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'asguard-attestation-key-test-'));
+  const privatePath = join(directory, 'private.pem');
+  const publicPath = join(directory, 'public.pem');
+  const otherPublicPath = join(directory, 'other-public.pem');
+  writeFileSync(privatePath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
+  writeFileSync(otherPublicPath, generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }));
+  try {
+    assert.doesNotThrow(() => validateApprovalKeyPair(privatePath, publicPath));
+    assert.throws(() => validateApprovalKeyPair(privatePath, otherPublicPath), /do not match/i);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('approval attestation round-trips and verifies', () => {
   const attestation = issueApprovalAttestation({
@@ -19,11 +43,11 @@ test('approval attestation round-trips and verifies', () => {
     issued_at: new Date().toISOString(),
     rules_triggered: [{ rule_id: 'frequency_spike', severity: 'medium', score_contribution: 25 }],
     policy_version: '1.0.0',
-    secret: 'a-long-enough-test-secret-key-1234567890',
+    privateKey,
   });
 
   const verification = verifyApprovalAttestation(attestation, {
-    signingKey: 'a-long-enough-test-secret-key-1234567890',
+    publicKey,
     bytesToSign: 'hello world',
     expectedAgentId: 'agent_a',
     expectedPayloadHash: 'a'.repeat(64),
@@ -42,19 +66,31 @@ test('approval attestation round-trips and verifies', () => {
     anomaly_score: 18,
     issued_at: new Date().toISOString(),
     rules_triggered: [],
-    secret: 'another-long-enough-key-value-here-123456',
+    privateKey,
   });
 
   const valid = verifyApprovalAttestation(matching, {
-    signingKey: 'another-long-enough-key-value-here-123456',
+    publicKey,
     expectedAgentId: 'agent_b',
     expectedPayloadHash: 'b'.repeat(64),
     now: new Date(),
   });
   assert.equal(valid.valid, true);
 
+  const attackerPublicKey = generateKeyPairSync('ed25519').publicKey;
+  assert.deepEqual(verifyApprovalAttestation(matching, { publicKey: attackerPublicKey }), { valid: false, reason: 'signature_mismatch' });
+  assert.deepEqual(verifyApprovalAttestation(matching, {
+    publicKey: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  }), { valid: false, reason: 'invalid_public_key' });
+  assert.throws(() => issueApprovalAttestation({
+    decision_id: 'dec_audit_key', intent_id: 'intent_audit_key', agent_id: 'agent_a', network: 'near:testnet',
+    payload_hash: 'e'.repeat(64), action: 'approve_once', expires_at: new Date(Date.now() + 60_000).toISOString(),
+    anomaly_score: 0, issued_at: new Date().toISOString(), rules_triggered: [],
+    privateKey: 'not-an-ed25519-private-key-or-audit-hmac-secret',
+  }), /Ed25519 private key/i);
+
   assert.throws(() => {
-    assertApprovedThenSign('hello', matching, { signingKey: 'another-long-enough-key-value-here-123456', expectedAgentId: 'agent_b', expectedPayloadHash: 'b'.repeat(64) });
+    assertApprovedThenSign('hello', matching, { publicKey, expectedAgentId: 'agent_b', expectedPayloadHash: 'b'.repeat(64) });
   }, /ASGUARD attestation rejected/i);
 });
 
@@ -70,11 +106,11 @@ test('expired approval is rejected', () => {
     anomaly_score: 3,
     issued_at: new Date(Date.now() - 10_000).toISOString(),
     rules_triggered: [],
-    secret: 'zzz-very-long-test-secret-key-should-work-123',
+    privateKey,
   });
 
   const result = verifyApprovalAttestation(expired, {
-    signingKey: 'zzz-very-long-test-secret-key-should-work-123',
+    publicKey,
     now: new Date(),
   });
   assert.equal(result.valid, false);
@@ -82,7 +118,6 @@ test('expired approval is rejected', () => {
 });
 
 test('host amount ceiling accepts amounts within the cap and rejects higher HITL amounts', () => {
-  const signingKey = 'host-amount-ceiling-test-key-with-more-than-32-bytes';
   const issue = (amount?: number) => issueApprovalAttestation({
     decision_id: `dec_amount_${amount ?? 'missing'}`,
     intent_id: `intent_amount_${amount ?? 'missing'}`,
@@ -97,10 +132,10 @@ test('host amount ceiling accepts amounts within the cap and rejects higher HITL
     anomaly_score: 0,
     issued_at: new Date().toISOString(),
     rules_triggered: [],
-    secret: signingKey,
+    privateKey,
   });
   const verify = (maxAmountUsd: number | undefined) => verifyApprovalAttestation(issue(maxAmountUsd), {
-    signingKey,
+    publicKey,
     expectedAgentId: 'amount-agent',
     maxAmountUsd: 1_000,
   });
@@ -137,17 +172,17 @@ test('NEAR intent attestation binds canonical payload, domain, and derivation pa
     anomaly_score: 0,
     rules_triggered: [],
     issued_at: new Date().toISOString(),
-    secret: 'near-intent-test-key-with-more-than-32-bytes',
+    privateKey,
   });
 
   assert.equal(assertApprovedThenSignIntent(intent, attestation, {
-    signingKey: 'near-intent-test-key-with-more-than-32-bytes',
+    publicKey,
     expectedAgentId: 'near-agent',
     expectedNetwork: 'near:mainnet',
     expectedVerifier: 'intents.near',
   }), true);
   assert.throws(() => assertApprovedThenSignIntent({ ...intent, recipient: 'mallory.near' }, attestation, {
-    signingKey: 'near-intent-test-key-with-more-than-32-bytes',
+    publicKey,
     expectedAgentId: 'near-agent',
     expectedNetwork: 'near:mainnet',
     expectedVerifier: 'intents.near',
@@ -172,11 +207,11 @@ test('Chain Signatures host verifier rejects a different derivation path', () =>
     anomaly_score: 0,
     rules_triggered: [],
     issued_at: new Date().toISOString(),
-    secret: 'chain-signature-test-key-with-32-bytes-min',
+    privateKey,
   });
 
   assert.throws(() => assertApprovedThenSignChainPayload(payload, attestation, {
-    signingKey: 'chain-signature-test-key-with-32-bytes-min',
+    publicKey,
     derivationPath: 'ethereum-2',
     payloadDomain: 'near-chain-signature',
     expectedNetwork: 'ethereum:mainnet',
@@ -197,7 +232,6 @@ test('NEAR host callback is not invoked until its exact attestation verifies', a
   };
   const { normalizeNearIntent } = await import('./aos/nearIntent.js');
   const normalized = normalizeNearIntent(intent);
-  const signingKey = 'host-callback-test-key-with-more-than-32-bytes';
   const attestation = issueApprovalAttestation({
     decision_id: 'dec_host_callback',
     intent_id: 'intent_host_callback',
@@ -212,7 +246,7 @@ test('NEAR host callback is not invoked until its exact attestation verifies', a
     anomaly_score: 0,
     rules_triggered: [],
     issued_at: new Date().toISOString(),
-    secret: signingKey,
+    privateKey,
   });
   let callbackCalled = false;
   let originalPayload: unknown;
@@ -223,7 +257,7 @@ test('NEAR host callback is not invoked until its exact attestation verifies', a
   };
 
   await assert.rejects(() => withApprovedNearIntent({ ...intent, recipient: 'mallory.near' }, attestation, {
-    signingKey,
+    publicKey,
     expectedAgentId: 'near-agent',
     expectedNetwork: 'near:testnet',
     expectedVerifier: 'intents.near',
@@ -231,7 +265,7 @@ test('NEAR host callback is not invoked until its exact attestation verifies', a
   assert.equal(callbackCalled, false);
 
   const bytes = await withApprovedNearIntent(intent, attestation, {
-    signingKey,
+    publicKey,
     expectedAgentId: 'near-agent',
     expectedNetwork: 'near:testnet',
     expectedVerifier: 'intents.near',
@@ -244,7 +278,6 @@ test('NEAR host callback is not invoked until its exact attestation verifies', a
 test('Chain Signatures host callback is not invoked for a different payload path', async () => {
   const payload = 'unsigned foreign-chain payload';
   const payloadHash = createHash('sha256').update(payload).digest('hex');
-  const signingKey = 'chain-callback-test-key-with-more-than-32-bytes';
   const attestation = issueApprovalAttestation({
     decision_id: 'dec_chain_callback',
     intent_id: 'intent_chain_callback',
@@ -260,7 +293,7 @@ test('Chain Signatures host callback is not invoked for a different payload path
     anomaly_score: 0,
     rules_triggered: [],
     issued_at: new Date().toISOString(),
-    secret: signingKey,
+    privateKey,
   });
   let called = false;
   const requestSignature = async (approvedPayload: string | Uint8Array) => { called = true; return approvedPayload; };
@@ -270,7 +303,7 @@ test('Chain Signatures host callback is not invoked for a different payload path
     expectedNetwork: 'ethereum:mainnet',
     expectedChain: 'ethereum',
     signerContract: 'v1.signer',
-    signingKey,
+    publicKey,
     expectedAgentId: 'chain-agent',
   };
 

@@ -1,10 +1,12 @@
 import { parseApiCredentials } from '../server/auth';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export interface DemoConfig {
   apiUrl: string;
   runtimeToken: string;
   readToken: string;
-  auditKey: string;
+  attestationPublicKey: string;
   network: 'near:testnet';
   verifier: string;
 }
@@ -36,9 +38,13 @@ export function loadDemoConfig(): DemoConfig {
     throw new Error(`ASGUARD_API_CREDENTIALS must include an admin or operator credential so dashboard HITL decisions can be completed. ${credentialFix}`);
   }
 
-  const auditKey = process.env.ASGUARD_AUDIT_KEY?.trim();
-  if (!auditKey || Buffer.byteLength(auditKey, 'utf8') < 32) {
-    throw new Error(`ASGUARD_AUDIT_KEY must contain at least 32 bytes for host-side attestation verification. Generate a separate value with: node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))", set it in .env, and restart the backend.`);
+  const publicKeyPath = process.env.ASGUARD_ATTESTATION_PUBLIC_KEY_PATH?.trim();
+  if (!publicKeyPath) throw new Error('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH must point to the Ed25519 public PEM file.');
+  let attestationPublicKey: string;
+  try {
+    attestationPublicKey = readFileSync(resolve(publicKeyPath), 'utf8');
+  } catch {
+    throw new Error('Could not read the public key configured by ASGUARD_ATTESTATION_PUBLIC_KEY_PATH.');
   }
 
   const configuredNetwork = process.env.ASGUARD_NEAR_NETWORK || 'testnet';
@@ -61,7 +67,7 @@ export function loadDemoConfig(): DemoConfig {
     apiUrl: apiUrl.toString().replace(/\/$/, ''),
     runtimeToken: runtimeCredential.token,
     readToken: readCredential.token,
-    auditKey,
+    attestationPublicKey,
     network: 'near:testnet',
     verifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER || 'intents.near',
   };

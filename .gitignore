@@ -12,9 +12,6 @@
 
 # debug
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
 
 # environment files; keep the safe template versioned
 .env
