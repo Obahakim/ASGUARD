@@ -24,7 +24,7 @@ REST and MCP expose NEAR Intent and Chain Signature approval requests, approval 
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. Generate each value with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. The backend fails early if required credentials are missing or weak. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
+Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API tokens and an independent `ASGUARD_AUDIT_KEY`, each at least 32 bytes. Generate each value with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. The backend fails early if required credentials are missing or weak. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
 
 ## Run locally
 
