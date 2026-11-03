@@ -41,6 +41,8 @@ import { NearWalletWatchStore, NearWalletWatcher, registerAgentNearAccounts, typ
 import { findMatchingSubmittedIntent } from './submissions/correlation';
 import { intelligence } from './intelligence';
 import { validateSubmissionReport } from './submissions/report';
+import { verifyFinalizedNearTransfer } from './submissions/report';
+import { normalizeNearTransfer } from './aos/nearTransfer';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -97,12 +99,14 @@ const walletWatcher = new NearWalletWatcher({
   audit: (type, payload) => { auditAnchor.record(type, payload); },
   onActivity: (activity) => {
     const matchedIntent = findMatchingSubmittedIntent(activity, listTransactionIntents());
+    const reportableOutbound = activity.direction === 'outbound';
     const event: Event = { type: 'audit_log', timestamp: activity.observed_at, id: activity.id, agent_id: activity.agent_id,
-      action: matchedIntent ? 'NEAR wallet activity matched reported submission' : 'NEAR wallet activity observed without matching submission',
+      action: matchedIntent ? 'NEAR wallet activity matched reported submission'
+        : reportableOutbound ? 'NEAR outbound activity observed without matching submission' : 'NEAR inbound or self activity observed',
       resource: activity.account_id, status: 'success', details: { ...activity, matched_approval: Boolean(matchedIntent), intent_id: matchedIntent?.id } };
     bridge.broadcastEvent(event);
     logger.broadcastEvent(event);
-    if (!matchedIntent) {
+    if (!matchedIntent && reportableOutbound) {
       const observed = { ...activity, matched_approval: false, prevention_claim: false };
       auditAnchor.record('unmatched_wallet_activity', observed);
       const anomaly: Event = { type: 'anomaly_detected', timestamp: activity.observed_at, id: `unmatched_${crypto.randomUUID()}`,
@@ -245,7 +249,7 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     getPolicy: () => policyStore.getPolicy(),
     reportActivity: reportMcpActivity,
     reportViolation: reportMcpViolation,
-    requestSignApproval: async (input, identity) => ({ ...await processSignApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
+    requestSignApproval: async (input, identity) => ({ ...await processSignApproval(prepareSignApproval(input, identity), identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     requestNearIntentApproval: async (input, identity) => ({ ...await processNearIntentApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     requestChainSignatureApproval: async (input, identity) => ({ ...await processChainSignatureApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     getTransactionStatus: getTransactionIntent,
@@ -271,6 +275,28 @@ function registerWalletWatch(input: Record<string, unknown>, identity: NonNullab
     network: result.wallet.network, label: result.wallet.label, actor_id: identity.id,
   });
   return result.wallet;
+}
+
+function prepareSignApproval(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>): Record<string, unknown> {
+  if (input.payload_domain !== 'near-transfer') return input;
+  const transfer = normalizeNearTransfer(input.transfer);
+  if (input.payload_hash !== transfer.payloadHash) throw new Error('payload_hash does not match the canonical NEAR transfer.');
+  if (input.network !== 'near:testnet') throw new Error('NEAR transfer approvals are testnet-only.');
+  const wallet = walletWatchStore.list(String(input.agent_id ?? '')).find((candidate) =>
+    candidate.active && candidate.network === 'near:testnet' && candidate.account_id === transfer.transfer.sender);
+  if (!wallet) {
+    const details = { agent_id: input.agent_id, sender: transfer.transfer.sender, network: input.network, actor_id: identity.id };
+    auditAnchor.record('unwatched_transfer_signer', details);
+    const alert: Event = {
+      type: 'security_violation', timestamp: new Date().toISOString(), id: `unwatched_${crypto.randomUUID()}`,
+      agent_id: String(input.agent_id ?? 'unknown'), violation_type: 'unwatched_transfer_signer', severity: 'high',
+      requires_hitl: true, context: details,
+    };
+    bridge.broadcastEvent(alert);
+    logger.broadcastEvent(alert);
+    throw new Error("Transfer sender is not in this agent's active NEAR watch list; the request was alerted and rejected.");
+  }
+  return { ...input, transfer: transfer.transfer, wallet_id: wallet.id, chain: 'near' };
 }
 
 function connectAgent(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
@@ -333,7 +359,7 @@ app.get('/api/wallet-watch/activity', apiAuthenticator.requireAnyRole('admin', '
 app.post('/api/approvals/sign-request', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
   try {
     if (!req.asguardIdentity) { res.status(401).json({ status:'rejected', reason:'authentication_required' }); return; }
-    const response = await processSignApproval(req.body as Record<string, unknown>, req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
+    const response = await processSignApproval(prepareSignApproval(req.body as Record<string, unknown>, req.asguardIdentity), req.asguardIdentity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); });
     res.status(response.status === 'rejected' ? 403 : 200).json(response);
   } catch (error) {
     res.status(400).json({ status:'rejected', reason:error instanceof Error ? error.message : 'invalid_request' });
@@ -382,10 +408,18 @@ app.post('/api/auth/ws-ticket', apiAuthenticator.requireAnyRole('admin', 'operat
 // Transaction intent lifecycle. Idempotency prevents duplicate execution requests.
 app.get('/api/transactions', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (_req: Request, res: Response) => res.json({ success: true, intents: listTransactionIntents() }));
 
-app.post('/api/submissions/report', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
+app.post('/api/submissions/report', apiAuthenticator.requireAnyRole('runtime', 'admin'), async (req: Request, res: Response) => {
   try {
     if (!req.asguardIdentity) { res.status(401).json({ success: false, error: 'Authentication required.' }); return; }
     const report = validateSubmissionReport(req.body, getTransactionIntent(String(req.body?.intent_id ?? '')));
+    const approvedIntent = getTransactionIntent(report.intent_id);
+    if (!approvedIntent?.transfer) throw new Error('Approved transfer terms were not found.');
+    if (nearAdapter.network !== 'testnet') throw new Error('Submission reporting requires the configured NEAR RPC to use testnet.');
+    const transaction = await nearAdapter.getFinalizedTransaction(report.tx_hash, approvedIntent.transfer.sender);
+    const watchedAccounts = walletWatchStore.list(approvedIntent.agent_id)
+      .filter((wallet) => wallet.active && wallet.network === approvedIntent.network)
+      .map((wallet) => wallet.account_id);
+    verifyFinalizedNearTransfer(report, approvedIntent, transaction, watchedAccounts);
     const intent = recordSubmittedTransaction(report.intent_id, report.tx_hash);
     auditAnchor.record('approved_testnet_submission_reported', {
       intent_id: intent.id, agent_id: intent.agent_id, network: intent.network, payload_hash: intent.payload_hash,

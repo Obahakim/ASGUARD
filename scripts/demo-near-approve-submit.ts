@@ -52,7 +52,7 @@ if (process.env.ASGUARD_DEMO_SUBMIT !== 'true') {
   });
   if (!registration.ok) throw new Error(`Could not register the demo host with ASGUARD (HTTP ${registration.status}).`);
 
-  const transferDescription = JSON.stringify({ sender: accountId, receiver: receiverId, amount_near: amountNear, network: config.network });
+  const transfer = { sender: accountId, receiver: receiverId, amount: amountYocto };
   console.log(`Requesting human-reviewed approval for a ${amountNear} NEAR testnet transfer from ${accountId} to ${receiverId}.`);
   console.log('The backend will not sign or broadcast. The demo host signs only inside the SDK callback after attestation verification.');
 
@@ -63,7 +63,7 @@ if (process.env.ASGUARD_DEMO_SUBMIT !== 'true') {
     agentId,
     agentName: 'ASGUARD testnet submission demo',
     action: 'near-testnet-transfer',
-    payload: transferDescription,
+    payload: transfer,
     payloadDomain: 'near-transfer',
     network: config.network,
     idempotencyKey: `near-submit-${randomUUID()}`,
@@ -75,7 +75,7 @@ if (process.env.ASGUARD_DEMO_SUBMIT !== 'true') {
     if (process.env.ASGUARD_DEMO_SUBMIT !== 'true' || process.env.ASGUARD_NEAR_NETWORK !== 'testnet') {
       throw new Error('Submission safeguards changed before host signing; refusing to submit.');
     }
-    if (canonicalPayload !== transferDescription) throw new Error('Verified transfer description differs from the requested transfer.');
+    if (JSON.stringify(canonicalPayload) !== JSON.stringify(transfer)) throw new Error('Verified transfer terms differ from the requested transfer.');
 
     const nearApi = createRequire(`${process.cwd()}/package.json`)('near-api-js') as NearApiModule;
     const keyStore = new nearApi.keyStores.InMemoryKeyStore();

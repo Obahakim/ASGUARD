@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { issueApprovalAttestation } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
-import { AsguardApprovalError, withAsguardApproval } from './index';
+import { AsguardApprovalError, connectAgent, withAsguardApproval } from './index';
+import { normalizeNearTransfer } from '../server/aos/nearTransfer';
 
 const pair = generateKeyPairSync('ed25519');
 const privateKey = pair.privateKey;
@@ -26,10 +27,11 @@ function approvedResponse(): SignApprovalResponse {
   return { status: 'approved', intent_id: attestation.intent_id, decision_id: attestation.decision_id, attestation };
 }
 
-function approvedTransferResponse(payload: string): SignApprovalResponse {
+function approvedTransferResponse(payload: unknown): SignApprovalResponse {
+  const normalized = normalizeNearTransfer(payload);
   const attestation = issueApprovalAttestation({
     decision_id: randomUUID(), intent_id: randomUUID(), agent_id: 'test-agent',
-    payload_hash: createHash('sha256').update(payload).digest('hex'), network: 'near:testnet', chain: 'near',
+    payload_hash: normalized.payloadHash, network: 'near:testnet', chain: 'near',
     payload_domain: 'near-transfer', action: 'approve_once', expires_at: new Date(Date.now() + 60_000).toISOString(),
     issued_at: new Date().toISOString(), anomaly_score: 1, rules_triggered: [], privateKey,
   });
@@ -77,7 +79,7 @@ test('bad attestation is rejected without invoking the host callback', async () 
 });
 
 test('near transfer callback receives only the exact approved testnet transfer description', async () => {
-  const payload = JSON.stringify({ sender: 'sender.testnet', receiver: 'receiver.testnet', amount_near: '0.001' });
+  const payload = { sender: 'sender.testnet', receiver: 'receiver.testnet', amount: '1000000000000000000000' };
   const decision = approvedTransferResponse(payload);
   let callbackCount = 0;
   await withAsguardApproval(options(async (input, init) => {
@@ -85,13 +87,30 @@ test('near transfer callback receives only the exact approved testnet transfer d
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     assert.equal(body.network, 'near:testnet');
     assert.equal(body.payload_domain, 'near-transfer');
-    assert.equal(body.payload_hash, createHash('sha256').update(payload).digest('hex'));
+    assert.deepEqual(body.transfer, payload);
+    assert.equal(body.payload_hash, normalizeNearTransfer(payload).payloadHash);
     return jsonResponse(decision);
   }, { payload, payloadDomain: 'near-transfer', expectedVerifier: undefined }), async ({ canonicalPayload }) => {
     callbackCount += 1;
-    assert.equal(canonicalPayload, payload);
+    assert.deepEqual(canonicalPayload, payload);
   });
   assert.equal(callbackCount, 1);
+});
+
+test('connectAgent registers watched public accounts through the SDK', async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const result = await connectAgent({
+    baseUrl: 'http://localhost:8080', token: 'runtime-token-that-is-at-least-32-bytes-long',
+    agentId: 'test-agent', agentName: 'Test Agent', network: 'near:testnet',
+    accountIds: ['sender.testnet'],
+    fetchImpl: async (input, init) => {
+      assert.equal(input, 'http://localhost:8080/api/agents/connect');
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse({ success: true, agent_id: 'test-agent', accounts: [{ account_id: 'sender.testnet' }] });
+    },
+  });
+  assert.deepEqual(requestBody?.account_ids, ['sender.testnet']);
+  assert.equal(result.success, true);
 });
 
 test('HITL timeout denies and never invokes the host callback', async () => {

@@ -35,6 +35,9 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
   const nearIntent = request.context.near_intent && typeof request.context.near_intent === 'object'
     ? request.context.near_intent as Record<string, unknown>
     : undefined;
+  const transfer = request.context.transfer && typeof request.context.transfer === 'object'
+    ? request.context.transfer as Record<string, unknown>
+    : undefined;
   const rules = Array.isArray(request.context.rules) ? request.context.rules as Array<Record<string, unknown>> : [];
 
   const handleAction = async (action: 'allow_once' | 'allow_session' | 'deny_terminate') => {
@@ -84,6 +87,12 @@ export default function ApprovalModal({ request, onDecide }: ApprovalModalProps)
             <p className="break-all"><span className="text-slate-400">From: </span><span className="text-slate-100">{String(nearIntent.origin_asset ?? 'unknown asset')}</span></p>
             <p className="break-all"><span className="text-slate-400">To: </span><span className="text-slate-100">{String(nearIntent.destination_asset ?? 'unknown asset')}</span></p>
             <p className="break-all sm:col-span-2"><span className="text-slate-400">Recipient: </span><span className="text-slate-100">{String(nearIntent.recipient ?? 'not decoded')}</span></p>
+          </div>}
+          {transfer && <div className="grid grid-cols-1 gap-2 rounded border border-amber-400/30 bg-amber-400/5 p-3 text-xs">
+            <p className="font-semibold uppercase tracking-wide text-amber-200">NEAR transfer terms</p>
+            <p className="break-all"><span className="text-slate-400">Sender: </span><span className="text-slate-100">{String(transfer.sender ?? 'unknown')}</span></p>
+            <p className="break-all"><span className="text-slate-400">Receiver: </span><span className="text-slate-100">{String(transfer.receiver ?? 'unknown')}</span></p>
+            <p className="break-all"><span className="text-slate-400">Amount: </span><span className="text-slate-100">{String(transfer.amount ?? 'unknown')} yoctoNEAR</span></p>
           </div>}
           {rules.length > 0 && <div className="rounded border asguard-border bg-slate-800/50 p-3 text-xs">
             <p className="mb-1 font-semibold uppercase tracking-wide text-slate-400">Triggered rules</p>

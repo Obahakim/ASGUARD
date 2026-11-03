@@ -5,6 +5,7 @@ import {
   type ApprovalVerificationOptions,
 } from '../lib/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
+import { normalizeNearTransfer } from '../server/aos/nearTransfer';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 
 export type AsguardPayloadDomain = 'near-intent' | 'near-chain-signature' | 'near-transfer';
@@ -49,11 +50,53 @@ export interface AsguardApprovalOptions<TPayload> {
   fetchImpl?: typeof fetch;
 }
 
+export interface AsguardConnectAgentOptions {
+  baseUrl: string;
+  token: string;
+  agentId: string;
+  agentName: string;
+  network: 'near:mainnet' | 'near:testnet';
+  accountIds: string[];
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
 export class AsguardApprovalError extends Error {
   constructor(message: string, readonly status?: string) {
     super(message);
     this.name = 'AsguardApprovalError';
   }
+}
+
+export async function connectAgent(options: AsguardConnectAgentOptions): Promise<Record<string, unknown>> {
+  assertHostRuntime();
+  let apiUrl: URL;
+  try { apiUrl = new URL(options.baseUrl); } catch { throw new Error('baseUrl must be an HTTP(S) ASGUARD origin.'); }
+  if (apiUrl.protocol !== 'https:' && !(apiUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(apiUrl.hostname))) {
+    throw new Error('ASGUARD API connections must use HTTPS outside local development.');
+  }
+  if (!options.token || Buffer.byteLength(options.token, 'utf8') < 32) throw new Error('A runtime API token of at least 32 bytes is required.');
+  if (!options.agentId.trim() || options.agentId.length > 128 || !options.agentName.trim() || options.agentName.length > 128) {
+    throw new Error('agentId and agentName must be 1-128 characters.');
+  }
+  if (!['near:mainnet', 'near:testnet'].includes(options.network)) throw new Error('network must be near:mainnet or near:testnet.');
+  if (!Array.isArray(options.accountIds) || options.accountIds.length < 1 || options.accountIds.length > 20
+    || options.accountIds.some((accountId) => typeof accountId !== 'string' || accountId.length > 64 || !/^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/.test(accountId))) {
+    throw new Error('accountIds must contain 1-20 valid public NEAR account IDs.');
+  }
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) throw new Error('timeoutMs must be from 100 to 60000.');
+  const result = await requestJson<Record<string, unknown>>(options.fetchImpl ?? fetch, `${options.baseUrl.replace(/\/$/, '')}/api/agents/connect`, options.token, Date.now() + timeoutMs, {
+    method: 'POST',
+    body: JSON.stringify({
+      agent_id: options.agentId, agent_name: options.agentName, network: options.network,
+      account_ids: [...new Set(options.accountIds)],
+    }),
+  });
+  if (result.success !== true || result.agent_id !== options.agentId || !Array.isArray(result.accounts)) {
+    throw new AsguardApprovalError('ASGUARD returned an invalid agent connection response.');
+  }
+  return result;
 }
 
 function assertHostRuntime(): void {
@@ -105,7 +148,9 @@ async function requestJson<T>(fetchImpl: typeof fetch, url: string, token: strin
     signal: init?.signal ?? AbortSignal.timeout(remaining),
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init?.headers },
   });
-  const body = await response.json().catch(() => ({})) as T & { error?: string; reason?: string };
+  let body: T & { error?: string; reason?: string };
+  try { body = await response.json() as T & { error?: string; reason?: string }; }
+  catch { throw new AsguardApprovalError('ASGUARD returned an invalid JSON response.'); }
   if (!response.ok) throw new AsguardApprovalError(body.reason ?? body.error ?? `ASGUARD returned HTTP ${response.status}.`);
   return body;
 }
@@ -149,15 +194,14 @@ export async function withAsguardApproval<TPayload, TResult>(
       ...(options.ipAddress ? { ip_address: options.ipAddress } : {}), ...(options.deviceId ? { device_id: options.deviceId } : {}),
     };
   } else {
-    const bytes = typeof options.payload === 'string' ? Buffer.from(options.payload, 'utf8') : Buffer.from(options.payload as unknown as Uint8Array);
-    if (bytes.length === 0) throw new Error('NEAR transfer description must not be empty.');
-    canonicalPayload = options.payload;
-    payloadHash = createHash('sha256').update(bytes).digest('hex');
+    const normalized = normalizeNearTransfer(options.payload);
+    canonicalPayload = normalized.transfer;
+    payloadHash = normalized.payloadHash;
     endpoint = '/api/approvals/sign-request';
     body = {
       agent_id: options.agentId, agent_name: options.agentName, action: options.action ?? 'near-testnet-transfer',
       risk_level: options.riskLevel, payload_hash: payloadHash, payload_domain: 'near-transfer',
-      network: options.network, chain: 'near', idempotency_key: options.idempotencyKey,
+      network: options.network, chain: 'near', transfer: normalized.transfer, idempotency_key: options.idempotencyKey,
       ...(options.ipAddress ? { ip_address: options.ipAddress } : {}), ...(options.deviceId ? { device_id: options.deviceId } : {}),
     };
   }
@@ -197,7 +241,9 @@ export async function withAsguardApproval<TPayload, TResult>(
     maxAmountUsd: options.expectedMaxAmountUsd,
     bytesToSign: options.payloadDomain === 'near-intent'
       ? (canonicalPayload as { schema: string }) && normalizeNearIntent(options.payload, Date.now(), expectedVerifier).canonicalBytes
-      : options.payload as unknown as Uint8Array | string,
+      : options.payloadDomain === 'near-transfer'
+        ? JSON.stringify(canonicalPayload)
+        : options.payload as unknown as Uint8Array | string,
   };
   const result = verifyApprovalAttestation(attestation, verification);
   if (!result.valid) throw new AsguardApprovalError(`ASGUARD attestation verification failed: ${result.reason ?? 'invalid'}.`, result.reason);

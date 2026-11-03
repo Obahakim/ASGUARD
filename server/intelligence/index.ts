@@ -1,4 +1,4 @@
-export type IntelligenceSignalCode = 'bad_trade' | 'valueless_token' | 'unusual_behaviour' | 'possible_bypass' | 'unmatched_activity';
+export type IntelligenceSignalCode = 'bad_trade' | 'valueless_token' | 'new_contract' | 'unusual_behaviour' | 'possible_bypass' | 'unmatched_activity';
 
 export interface IntelligenceSignal {
   code: IntelligenceSignalCode;
@@ -22,31 +22,29 @@ export interface IntelligenceInput {
 }
 
 const allowedCodes = new Set<IntelligenceSignalCode>([
-  'bad_trade', 'valueless_token', 'unusual_behaviour', 'possible_bypass', 'unmatched_activity',
+  'bad_trade', 'valueless_token', 'new_contract', 'unusual_behaviour', 'possible_bypass', 'unmatched_activity',
 ]);
-
-function normalizedText(input: IntelligenceInput): string {
-  return JSON.stringify({ payload: input.payload ?? {}, details: input.details ?? {} }).toLowerCase();
-}
 
 function heuristicAnalysis(input: IntelligenceInput): IntelligenceResult {
   const signals: IntelligenceSignal[] = [];
-  const text = normalizedText(input);
   const slippage = typeof input.payload?.max_slippage_bps === 'number' ? input.payload.max_slippage_bps : undefined;
-  const amountUsd = typeof input.payload?.amount_usd === 'number' ? input.payload.amount_usd
-    : typeof input.details?.verified_amount_usd === 'number' ? input.details.verified_amount_usd : undefined;
+  const tokenFacts = input.details?.token_facts && typeof input.details.token_facts === 'object'
+    ? input.details.token_facts as Record<string, unknown> : undefined;
+  const valueOutUsd = typeof tokenFacts?.value_out_usd === 'number' ? tokenFacts.value_out_usd : undefined;
+  const valueInUsd = typeof tokenFacts?.value_in_usd === 'number' ? tokenFacts.value_in_usd : undefined;
 
   if (slippage !== undefined && slippage > 500) {
     signals.push({ code: 'bad_trade', confidence: 0.75, explanation: `Requested slippage is ${slippage} basis points; review the trade terms.` });
   }
-  if (input.kind === 'approval' && (amountUsd === undefined || amountUsd <= 0)) {
-    signals.push({ code: 'valueless_token', confidence: 0.45, explanation: 'No positive verified USD value is attached; the asset may be unpriced.' });
+  if (input.kind === 'approval' && valueOutUsd !== undefined && valueOutUsd > 0 && valueInUsd === undefined) {
+    signals.push({ code: 'valueless_token', confidence: 0.6, explanation: 'A priced outgoing asset is exchanged for an incoming asset without a fresh verified USD price.' });
   }
-  if (input.kind === 'watch_activity' && input.matched_approval === false) {
+  if (input.kind === 'approval' && tokenFacts?.destination_verified === false) {
+    signals.push({ code: 'new_contract', confidence: 0.65, explanation: 'The received asset is absent from the configured verified-token allowlist; verify its contract before approval.' });
+  }
+  if (input.kind === 'watch_activity' && input.matched_approval === false
+    && input.details?.direction === 'outbound' && input.details?.signer_id === input.details?.account_id) {
     signals.push({ code: 'unmatched_activity', confidence: 0.95, explanation: 'Observed public-chain activity did not match a recorded approved payload; this is an observation, not proof ASGUARD prevented execution.' });
-  }
-  if (/bypass|override|disable_guard|skip_approval/.test(text)) {
-    signals.push({ code: 'possible_bypass', confidence: 0.55, explanation: 'Activity metadata contains language associated with bypassing a control; inspect the original event.' });
   }
   if (input.details?.risk_level === 'critical' || input.details?.risk_level === 'high') {
     signals.push({ code: 'unusual_behaviour', confidence: input.details.risk_level === 'critical' ? 0.9 : 0.7, explanation: 'The existing risk evaluator marked this activity high or critical.' });
@@ -92,6 +90,13 @@ export function createIntelligenceService(options: {
 } = {}) {
   const enabled = options.enabled ?? process.env.ASGUARD_AI_ENABLED === 'true';
   const fetchImpl = options.fetchImpl ?? fetch;
+  if (options.endpoint) {
+    let endpoint: URL;
+    try { endpoint = new URL(options.endpoint); } catch { throw new Error('ASGUARD_AI_API_URL must be a valid HTTPS NEAR AI URL.'); }
+    if (endpoint.protocol !== 'https:' || !(endpoint.hostname === 'near.ai' || endpoint.hostname.endsWith('.near.ai'))) {
+      throw new Error('ASGUARD_AI_API_URL must use HTTPS and a near.ai hostname.');
+    }
+  }
   return {
     get enabled() { return enabled; },
     async analyze(input: IntelligenceInput): Promise<IntelligenceResult | undefined> {

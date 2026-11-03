@@ -241,13 +241,13 @@ function normalizeTransactions(value: unknown): NormalizedChainTransaction[] {
   });
   const normalizedReceipts = receipts.flatMap((row) => {
     if (!row || typeof row !== 'object') return [];
-    const receipt = row as { receipt_id?: unknown; predecessor_id?: unknown; receiver_id?: unknown; receipt?: unknown };
+    const receipt = row as { receipt_id?: unknown; receiver_id?: unknown; receipt?: unknown };
     if (typeof receipt.receipt_id !== 'string') return [];
     const details = receipt.receipt && typeof receipt.receipt === 'object' ? receipt.receipt as Record<string, unknown> : {};
     const actionReceipt = details.Action && typeof details.Action === 'object' ? details.Action as Record<string, unknown> : {};
     const actions = Array.isArray(actionReceipt.actions) ? actionReceipt.actions.flatMap((action) => action && typeof action === 'object' ? Object.keys(action as object) : []) : [];
-    return [{ hash: receipt.receipt_id, signer_id: typeof receipt.predecessor_id === 'string' ? receipt.predecessor_id : undefined,
-      receiver_id: typeof receipt.receiver_id === 'string' ? receipt.receiver_id : undefined, action_kinds: actions.length ? actions : ['receipt'] }];
+    return [{ hash: receipt.receipt_id, receiver_id: typeof receipt.receiver_id === 'string' ? receipt.receiver_id : undefined,
+      action_kinds: actions.length ? actions : ['receipt'] }];
   });
   return [...normalizedTransactions, ...normalizedReceipts];
 }

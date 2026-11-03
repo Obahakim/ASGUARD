@@ -16,7 +16,7 @@
     "build:server": "tsc --noEmit -p tsconfig.server.json",
     "build:agent-sdk": "tsc --noEmit -p tsconfig.agent-sdk.json",
     "build:frontend:types": "tsc --noEmit -p tsconfig.frontend.json",
-    "test": "node --require ./scripts/test-preload.cjs --import tsx --test --test-force-exit server/**/*.test.ts agent-sdk/**/*.test.ts",
+    "test": "node scripts/test.mjs",
     "demo:near": "node scripts/run-demo.cjs scripts/demo-near.ts approve",
     "demo:near:approve": "node scripts/run-demo.cjs scripts/demo-near.ts approve",
     "demo:near:hitl": "node scripts/run-demo.cjs scripts/demo-near.ts hitl",

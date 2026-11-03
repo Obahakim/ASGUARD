@@ -75,6 +75,16 @@ const tools = [
         risk_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
         payload_hash: { type: 'string', minLength: 1, maxLength: 256 },
         payload_domain: { type: 'string', maxLength: 128 },
+        transfer: {
+          type: 'object',
+          required: ['sender', 'receiver', 'amount'],
+          properties: {
+            sender: { type: 'string', minLength: 2, maxLength: 64 },
+            receiver: { type: 'string', minLength: 2, maxLength: 64 },
+            amount: { type: 'string', pattern: '^[1-9][0-9]{0,77}$' },
+          },
+          additionalProperties: false,
+        },
         derivation_path: { type: 'string', maxLength: 128 },
         intent_type: { type: 'string', maxLength: 64 },
         network: { type: 'string', minLength: 1, maxLength: 128 },

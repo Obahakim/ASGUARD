@@ -39,3 +39,22 @@ test('NEAR health fails closed when RPC reports a different network', async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test('NEAR submission lookup explicitly waits for final execution', async () => {
+  const originalFetch = globalThis.fetch;
+  let request: Record<string, unknown> | undefined;
+  try {
+    globalThis.fetch = async (_input, init) => {
+      request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ result: { final_execution_status: 'FINAL' } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    };
+    const adapter = new NearAdapter({ network: 'testnet', rpcUrl: 'https://rpc.testnet.near.org' });
+    const result = await adapter.getFinalizedTransaction('hash', 'sender.testnet');
+    assert.deepEqual(request?.params, { tx_hash: 'hash', sender_account_id: 'sender.testnet', wait_until: 'FINAL' });
+    assert.equal((result as { final_execution_status: string }).final_execution_status, 'FINAL');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

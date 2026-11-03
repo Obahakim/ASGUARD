@@ -4,6 +4,21 @@ Use `withAsguardApproval` in the trusted Node.js host that owns the agent's loca
 
 The SDK is exported as `asguard/agent-sdk` from the ASGUARD repository package. Keep this code in the host backend; do not import it into browser bundles. Supply only ASGUARD's Ed25519 public verification key to the host. The private key remains on the ASGUARD server, and the separate HMAC audit key is never used by the SDK.
 
+Call `connectAgent` once during host startup with the agent's public NEAR account IDs. This registers them for read-only monitoring; private keys remain local to the host.
+
+```ts
+import { connectAgent } from 'asguard/agent-sdk';
+
+await connectAgent({
+  baseUrl: process.env.ASGUARD_API_URL!,
+  token: process.env.ASGUARD_RUNTIME_TOKEN!,
+  agentId: 'swap-agent-01',
+  agentName: 'Swap Agent',
+  network: 'near:testnet',
+  accountIds: [agentAccount.accountId],
+});
+```
+
 ## NEAR Intent integration
 
 ```ts
@@ -32,7 +47,7 @@ const result = await withAsguardApproval({
 
 The `expectedMaxAmountUsd` value is a host-side ceiling. If ASGUARD cannot verify a fresh price and the resulting attestation does not carry a value bound, the SDK rejects before the callback. Do not catch an approval error and continue to signing.
 
-For host-built NEAR testnet transfers, the `near-transfer` payload domain hashes the exact serialized transfer description and is testnet-only. ASGUARD requires HITL for this generic NEAR signing request; the callback runs only after the SDK verifies the Ed25519 attestation. The host, not ASGUARD, signs and broadcasts.
+For host-built NEAR testnet transfers, `near-transfer` accepts only `{ sender, receiver, amount }`, where amount is a positive integer string in yoctoNEAR. The SDK and server hash the same canonical JSON summary; ASGUARD applies the recipient allowlist and USD cap, requires HITL, and shows all three terms to the operator. Submission reports are accepted only after RPC confirms a finalized transaction with the watched signer and matching receiver and amount. The callback runs only after the SDK verifies the Ed25519 attestation. The host, not ASGUARD, signs and broadcasts.
 
 ## Chain Signatures integration
 

@@ -60,7 +60,10 @@ test('polls real NEAR RPC response shapes, records matching public transactions,
         if (method === 'block' && params.finality === 'final') return { header: { height: 2 }, chunks: [] };
         if (method === 'block' && params.block_id === 2) return { header: { height: 2 }, chunks: [{ chunk_hash: 'chunk-2' }] };
         if (method === 'block') return { header: { height: params.block_id }, chunks: [] };
-        if (method === 'chunk') return { transactions: [{ hash: 'tx-public-1', signer_id: 'bot.near', receiver_id: 'dex.near', actions: [{ FunctionCall: {} }] }], receipts: [] };
+        if (method === 'chunk') return {
+          transactions: [{ hash: 'tx-public-1', signer_id: 'bot.near', receiver_id: 'dex.near', actions: [{ FunctionCall: {} }] }],
+          receipts: [{ receipt_id: 'receipt-public-1', predecessor_id: 'bot.near', receiver_id: 'dex.near', receipt: { Action: { actions: [{ Transfer: {} }] } } }],
+        };
         throw new Error(`unexpected method ${method}`);
       },
     });

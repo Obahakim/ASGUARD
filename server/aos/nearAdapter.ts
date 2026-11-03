@@ -66,6 +66,32 @@ export class NearAdapter {
     }
   }
 
+  async getFinalizedTransaction(txHash: string, senderAccountId: string): Promise<unknown> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'asguard-submission-report',
+          method: 'tx',
+          params: { tx_hash: txHash, sender_account_id: senderAccountId, wait_until: 'FINAL' },
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`NEAR RPC returned HTTP ${response.status}.`);
+      const body = await response.json() as { result?: unknown; error?: { message?: string } };
+      if (body.error || !body.result || typeof body.result !== 'object') {
+        throw new Error(body.error?.message ?? 'NEAR RPC returned no transaction result.');
+      }
+      return body.result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async estimateUsdValue(assetId: string, amountInSmallestUnit: string, now = Date.now()): Promise<number | undefined> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5_000);

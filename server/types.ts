@@ -1,4 +1,5 @@
 import type { IntelligenceResult } from './intelligence';
+import type { NearTransferSummary } from './aos/nearTransfer';
 
 export interface AsguardPolicy {
 	max_auto_trade_usd: number;
@@ -244,6 +245,7 @@ export interface TransactionIntent {
 	derivation_path?: string;
 	signer_contract?: string;
 	intent_type?: string;
+	transfer?: NearTransferSummary;
 	amount?: string | number;
 	policy_version?: string;
 	status: TransactionIntentStatus;
@@ -271,6 +273,7 @@ export interface SignApprovalRequest {
 	device_id?: string; contract_address?: string; wallet_id?: string; idempotency_key: string;
 	payload_domain?: string; derivation_path?: string; signer_contract?: string; intent_type?: string;
 	near_intent?: Record<string, unknown>;
+	transfer?: NearTransferSummary;
 	details?: Record<string, unknown>;
 }
 export interface SignApprovalResponse {
