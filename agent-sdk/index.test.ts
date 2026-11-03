@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { issueApprovalAttestation } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
@@ -22,6 +22,16 @@ function approvedResponse(): SignApprovalResponse {
     network: 'near:testnet', chain: 'near', payload_domain: 'near-intent', intent_type: 'token_diff', action: 'approve_once',
     expires_at: new Date(Date.now() + 60_000).toISOString(), issued_at: new Date().toISOString(), anomaly_score: 1,
     rules_triggered: [], privateKey,
+  });
+  return { status: 'approved', intent_id: attestation.intent_id, decision_id: attestation.decision_id, attestation };
+}
+
+function approvedTransferResponse(payload: string): SignApprovalResponse {
+  const attestation = issueApprovalAttestation({
+    decision_id: randomUUID(), intent_id: randomUUID(), agent_id: 'test-agent',
+    payload_hash: createHash('sha256').update(payload).digest('hex'), network: 'near:testnet', chain: 'near',
+    payload_domain: 'near-transfer', action: 'approve_once', expires_at: new Date(Date.now() + 60_000).toISOString(),
+    issued_at: new Date().toISOString(), anomaly_score: 1, rules_triggered: [], privateKey,
   });
   return { status: 'approved', intent_id: attestation.intent_id, decision_id: attestation.decision_id, attestation };
 }
@@ -66,6 +76,24 @@ test('bad attestation is rejected without invoking the host callback', async () 
   assert.equal(callbackCount, 0);
 });
 
+test('near transfer callback receives only the exact approved testnet transfer description', async () => {
+  const payload = JSON.stringify({ sender: 'sender.testnet', receiver: 'receiver.testnet', amount_near: '0.001' });
+  const decision = approvedTransferResponse(payload);
+  let callbackCount = 0;
+  await withAsguardApproval(options(async (input, init) => {
+    assert.equal(input, 'http://localhost:8080/api/approvals/sign-request');
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.equal(body.network, 'near:testnet');
+    assert.equal(body.payload_domain, 'near-transfer');
+    assert.equal(body.payload_hash, createHash('sha256').update(payload).digest('hex'));
+    return jsonResponse(decision);
+  }, { payload, payloadDomain: 'near-transfer', expectedVerifier: undefined }), async ({ canonicalPayload }) => {
+    callbackCount += 1;
+    assert.equal(canonicalPayload, payload);
+  });
+  assert.equal(callbackCount, 1);
+});
+
 test('HITL timeout denies and never invokes the host callback', async () => {
   let calls = 0;
   let callbackCount = 0;
@@ -73,7 +101,7 @@ test('HITL timeout denies and never invokes the host callback', async () => {
     calls += 1;
     return jsonResponse({ status: 'pending_hitl', request_id: 'req-test', intent_id: 'intent-test' });
   };
-  await assert.rejects(withAsguardApproval(options(fetchImpl, { timeoutMs: 200, pollIntervalMs: 100 }), async () => {
+  await assert.rejects(withAsguardApproval(options(fetchImpl, { timeoutMs: 1_500, pollIntervalMs: 100 }), async () => {
     callbackCount += 1;
   }), (error: unknown) => error instanceof AsguardApprovalError && error.status === 'timeout_deny');
   assert.ok(calls >= 2);

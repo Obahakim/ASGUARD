@@ -44,7 +44,7 @@ const transitions: Record<TransactionIntentStatus, TransactionIntentStatus[]> = 
   pending_hitl: ['approved', 'rejected', 'expired'],
   blocked: [],
   awaiting_approval: ['approved', 'rejected', 'expired'],
-  approved: ['authorized', 'rejected', 'expired'],
+  approved: ['authorized', 'submitted', 'rejected', 'expired'],
   authorized: ['submitted', 'failed'],
   submitted: ['confirmed', 'failed'],
   confirmed: [],
@@ -135,7 +135,7 @@ export function recordSubmittedTransaction(id: string, txHash: string): Transact
   const intent = intents.get(id);
   if (!intent) throw new Error('transaction intent not found');
   if (intent.status === 'submitted' && intent.tx_hash === txHash) return intent;
-  if (intent.status !== 'approved') throw new Error('transaction intent must be approved before submission reporting');
+  if (!transitions[intent.status].includes('submitted')) throw new Error('transaction intent must be approved before submission reporting');
   const submittedAt = now();
   const updated = { ...intent, status: 'submitted' as const, tx_hash: txHash, submitted_at: submittedAt, updated_at: submittedAt };
   intents.set(id, updated);

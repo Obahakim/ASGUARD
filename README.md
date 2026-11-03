@@ -20,7 +20,7 @@ Install/use the repository package subpath `asguard/agent-sdk` from a trusted No
 
 ## API and MCP
 
-REST and MCP expose NEAR Intent and Chain Signature approval requests, approval status, transaction intents, policy, health, and audit diagnostics. Wallet watch exposes `asguard_watch_near_wallet`, `asguard_list_watched_wallets`, and `asguard_get_wallet_activity`. Runtime credentials request approvals and register watches; admin/operator credentials resolve HITL and manage policy/watches; auditor credentials are read-only. Sensitive API routes are role-gated. There is no Postgres backend; durable state uses atomic local JSON files.
+REST and MCP expose NEAR Intent and Chain Signature approval requests, approval status, transaction intents, policy, health, and audit diagnostics. Agents connect with `POST /api/agents/connect` or MCP `asguard_connect_agent`; the public NEAR accounts they declare are added to read-only wallet watch and the connection is audited. Wallet watch also exposes `asguard_watch_near_wallet`, `asguard_list_watched_wallets`, and `asguard_get_wallet_activity`. Runtime credentials request approvals and register watches; admin/operator credentials resolve HITL and manage policy/watches; auditor credentials are read-only. The host can report a completed testnet transaction to `POST /api/submissions/report`; ASGUARD validates the approved intent and exact payload hash but never signs or broadcasts. Sensitive API routes are role-gated. There is no Postgres backend; durable state uses atomic local JSON files.
 
 ## Configuration
 
@@ -30,7 +30,7 @@ Copy `.env.example` to `.env`. Configure separate runtime and admin/operator API
 node --input-type=module -e "import { generateKeyPairSync } from 'node:crypto'; import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('.asguard', { recursive: true }); const { privateKey, publicKey } = generateKeyPairSync('ed25519'); writeFileSync('.asguard/attestation-private.pem', privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }); writeFileSync('.asguard/attestation-public.pem', publicKey.export({ type: 'spki', format: 'pem' }));"
 ```
 
-The configured key paths must refer to this matching pair. The backend fails early if required credentials or keys are missing or invalid. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
+The configured key paths must refer to this matching pair. The backend fails early if required credentials or keys are missing or invalid. Optional NEAR AI enrichment is disabled unless `ASGUARD_AI_ENABLED=true`; configure its API URL, key, and model in local `.env`. It adds summaries/signals to audit/UI only and cannot affect allow, HITL, or deny decisions. NEAR testnet is the default; demos refuse to run if `ASGUARD_NEAR_NETWORK` is not `testnet`. Demo commands clear inherited `ASGUARD_*` environment values before loading `.env`, so the local file is authoritative. Configure HTTPS NEAR endpoints and `ASGUARD_ALLOWED_ORIGINS` for your deployment. State is stored in local JSON files; no database configuration is used.
 
 ## Run locally
 
@@ -58,8 +58,11 @@ Start both services as above and use **Approvals** in the dashboard when a reque
 3. `npm run demo:near:block` → see the expired intent rejected with its decode/preflight reason.
 4. `npm run demo:agent-guard` → deny the first request and approve the second in **Approvals**; see denial block the callback and verified approval reach it.
 5. Set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID, then run `npm run demo:watch` → see the registered watch and activity history (an empty history is valid).
+6. Optional tiny transfer proof: configure a funded NEAR testnet demo account and recipient in local `.env`, explicitly set `ASGUARD_DEMO_SUBMIT=true`, then run `npm run demo:near:approve:submit`. The host verifies the Ed25519 attestation, waits for HITL, sends at most `0.01 NEAR` on testnet, then reports its tx hash to ASGUARD. The backend never signs or broadcasts; the demo private key is removed before backend startup.
 
-Every demo stops before real signing or transaction submission; no private key, mainnet funds, or live fund movement is used. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions. For custom payloads and multi-scenario runs, see [docs/DEMO.md](docs/DEMO.md).
+The default demos stop before real signing or transaction submission; they use no private key or live fund movement. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions. For custom payloads and multi-scenario runs, see [docs/DEMO.md](docs/DEMO.md).
+
+The optional `demo:near:approve:submit` is the exception: it is disabled unless `ASGUARD_DEMO_SUBMIT=true`, requires NEAR testnet, and sends at most `0.01 NEAR` from a host-side demo account after verified approval and dashboard HITL. The private key is read from local `.env` by the demo process and stripped before backend startup. ASGUARD only records the host-reported transaction hash.
 
 ## Wallet watch
 

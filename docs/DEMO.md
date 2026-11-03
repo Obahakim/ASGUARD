@@ -14,6 +14,9 @@ The demo commands exercise the local approval API and stop at host-side approval
   Configure at least one `runtime` credential and one `admin` or `operator` credential. Generate the Ed25519 key pair using the command in the README Configuration section, keep the private key server-side, and make the public key available to the demo host. Keep `ASGUARD_NEAR_NETWORK=testnet`.
 3. Start `npm run dev:backend` and `npm run dev:frontend` in separate terminals. Resolve HITL requests in the dashboard's **Approvals** tab.
 4. For wallet-watch only, set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID. It is read-only; never enter a private key or seed phrase.
+5. The optional `demo:near:approve:submit` command requires `ASGUARD_DEMO_SUBMIT=true`, a funded NEAR testnet demo account, a public testnet recipient, and a tiny amount no greater than `0.01` NEAR. Its private key is read from local `.env` by the host demo only and is removed before backend startup. The host verifies approval before signing; ASGUARD only records the reported transaction hash.
+
+The demo requires `ASGUARD_DEMO_NEAR_ACCOUNT_ID`, `ASGUARD_DEMO_NEAR_PRIVATE_KEY`, `ASGUARD_DEMO_NEAR_RECIPIENT`, and optionally `ASGUARD_DEMO_NEAR_AMOUNT` (default `0.001`). Never use a mainnet key. A pending transfer requires an operator decision in the dashboard; rejection and timeout do not reach the host signing callback.
 
 The scripts authenticate against `/api/policy` before running. Missing or weak credentials, an unreachable backend, or a non-testnet network fail before a demo request is sent. Low-risk intents can still require HITL when fresh verified price data or policy allowlists are unavailable; this is the intended fail-closed behavior.
 

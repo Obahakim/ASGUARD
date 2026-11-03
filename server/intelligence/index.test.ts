@@ -42,3 +42,9 @@ test('provider output is constrained to known informational signals', async () =
   assert.equal(result?.provider, 'near-ai');
   assert.deepEqual(result?.signals.map((signal) => signal.code), ['possible_bypass']);
 });
+
+test('verified USD context suppresses the unpriced-token signal', async () => {
+  const service = createIntelligenceService({ enabled: true });
+  const result = await service.analyze({ kind: 'approval', agent_id: 'agent-a', details: { verified_amount_usd: 2 } });
+  assert.equal(result?.signals.some((signal) => signal.code === 'valueless_token'), false);
+});

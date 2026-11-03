@@ -95,4 +95,60 @@ function DiagnosticsPage({data,error,retry,request,agentId,setAgentId,profile,se
 
 function NotificationsPage({notes,setNotes}:{notes:{channel:string;reminder:string};setNotes:(x:{channel:string;reminder:string})=>void}){const save=(x:{channel:string;reminder:string})=>{setNotes(x);try{localStorage.setItem('asguard_notify_channel',x.channel);localStorage.setItem('asguard_notify_reminder',x.reminder);}catch{/* Local-only notes may be unavailable. */}};return <div className="space-y-5"><PageIntro title="Notification delivery" text="Outbound alert destinations are configured by the backend, not browser chat handles."/><Card title="Backend webhook environment" kicker="Restart backend after changes"><div className="grid gap-2 sm:grid-cols-2">{['TELEGRAM_WEBHOOK_URL','SLACK_WEBHOOK_URL','DISCORD_WEBHOOK_URL','ASGUARD_GENERIC_WEBHOOK_URL'].map(x=><code key={x} className="rounded-lg border bg-slate-50 p-3 text-[9px] text-sky-950">{x}</code>)}</div><div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4"><b className="text-[10px] text-amber-950">Telegram operator guide</b><ol className="mt-2 list-decimal space-y-1 pl-4 text-[9px] leading-4 text-amber-950"><li>Create a bot with BotFather or an intermediate HTTPS service that receives ASGUARD webhooks and routes them.</li><li>Configure the destination securely in that service. ASGUARD does not support DM-by-handle setup here.</li><li>Set TELEGRAM_WEBHOOK_URL in backend .env and restart the backend.</li><li>Run npm run demo:near:hitl, then verify delivery at the webhook destination and in backend logs.</li></ol></div></Card><Card title="Operator notes on this device" kicker="Local browser only"><p className="mb-3 text-[9px] text-slate-500">Stored in localStorage only; these do not configure backend alerts.</p><div className="grid gap-4 sm:grid-cols-2"><Field label="Preferred channel"><input value={notes.channel} onChange={e=>save({...notes,channel:e.target.value})} className="field" placeholder="Telegram webhook"/></Field><Field label="Webhook setup reminder"><input value={notes.reminder} onChange={e=>save({...notes,reminder:e.target.value})} className="field" placeholder="Operator reminder"/></Field></div></Card></div>;}
 
-function SetupPage(){const code="import { withAsguardApproval } from 'asguard/agent-sdk';\\n\\nawait withAsguardApproval({\\n  baseUrl: process.env.ASGUARD_API_URL!,\\n  token: process.env.ASGUARD_RUNTIME_TOKEN!,\\n  auditKey: process.env.ASGUARD_AUDIT_KEY!, // trusted host only\\n  agentId: 'swap-agent', agentName: 'Swap agent',\\n  payloadDomain: 'near-intent', network: 'near:testnet',\\n  expectedVerifier: 'intents.near',\\n  idempotencyKey: crypto.randomUUID(), riskLevel: 'low',\\n  payload: exactIntent,\\n}, async ({ attestation, canonicalPayload }) => {\\n  return hostSigner.sign(canonicalPayload, attestation);\\n});";return <div className="space-y-5"><PageIntro title="Operator & agent runbook" text="Run the existing control plane and connect a signing host without moving signing authority into ASGUARD."/><Card title="Run locally" kicker="API :8080 · dashboard :3000"><div className="grid gap-3 md:grid-cols-2">{[['01 · Install','git clone <repository>\\ncd ASGUARD\\nnpm install'],['02 · Configure','Copy .env.example to .env. Configure ASGUARD_API_CREDENTIALS with runtime and operator credentials and set ASGUARD_AUDIT_KEY to an independent random secret.'],['03 · Backend','npm run dev:backend\\n# http://localhost:8080'],['04 · Frontend','npm run dev:frontend\\n# http://localhost:3000'],['05 · Authenticate','Paste an admin, operator, or auditor credential. GET /api/health is validated before protected content appears.'],['06 · Resolve HITL','Run npm run demo:near:hitl. Review and resolve the request from Operations.']].map(([title,text])=><div key={title} className="rounded-xl border p-4"><b className="text-[10px]">{title}</b><pre className="mt-2 whitespace-pre-wrap break-words text-[9px] leading-4 text-slate-600">{text}</pre></div>)}</div></Card><Card title="Connect a trusted agent host" kicker="Request → decision → verify"><p className="text-[9px] leading-5 text-slate-600">Agents call <code>POST /api/approvals/near-intent</code> or <code>POST /api/approvals/chain-signature</code> with a runtime Bearer credential. MCP clients call <code>POST /mcp</code>. Poll with <code>GET /api/approvals/:request_id</code>.</p><pre className="mt-4 overflow-auto whitespace-pre-wrap rounded-xl bg-[#172b3d] p-4 text-[9px] leading-5 text-white"><code>{code}</code></pre><div className="mt-3 grid gap-3 sm:grid-cols-2"><p className="rounded-lg bg-slate-50 p-3 text-[9px] leading-4"><b>Mandatory host behavior</b><br/>Put all signing/submission inside the callback. It runs only after signature, expiry, hash, agent, network/domain, and bounds verify. Never proceed after rejection or timeout.</p><p className="rounded-lg bg-slate-50 p-3 text-[9px] leading-4"><b>Chain Signatures</b><br/>Bind exact unsigned bytes, target network, derivation path, and signer contract. Foreign-chain requests require HITL. ASGUARD never calls MPC.</p></div></Card><Card title="Judge demos" kicker="No signing or submission"><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{[['npm run demo:near:approve','Low-risk approval and host verification'],['npm run demo:near:hitl','HITL resolved from Operations'],['npm run demo:near:block','Expired intent rejection'],['npm run demo:agent-guard','Callback blocked until verification'],['npm run demo:watch','Register and inspect public account activity']].map(([cmd,text])=><div key={cmd} className="rounded-lg border p-3"><code className="text-[9px] font-bold text-sky-950">{cmd}</code><p className="mt-1 text-[8px] text-slate-500">{text}</p></div>)}</div><p className="mt-3 text-[9px] text-slate-500">ASGUARD never holds keys. Keep ASGUARD_AUDIT_KEY on the trusted host only and never in a browser-exposed variable.</p></Card></div>;}
+function SetupPage() {
+  const code = [
+    "import { readFileSync } from 'node:fs';",
+    "import { withAsguardApproval } from 'asguard/agent-sdk';",
+    '',
+    'await withAsguardApproval({',
+    '  baseUrl: process.env.ASGUARD_API_URL!,',
+    '  token: process.env.ASGUARD_RUNTIME_TOKEN!,',
+    "  attestationPublicKey: readFileSync(process.env.ASGUARD_ATTESTATION_PUBLIC_KEY_PATH!, 'utf8'),",
+    "  agentId: 'swap-agent', agentName: 'Swap agent',",
+    "  payloadDomain: 'near-intent', network: 'near:testnet',",
+    "  expectedVerifier: 'intents.near',",
+    '  idempotencyKey: crypto.randomUUID(), riskLevel: \'low\',',
+    '  payload: exactIntent,',
+    '}, async ({ attestation, canonicalPayload }) => {',
+    '  return hostSigner.sign(canonicalPayload, attestation);',
+    '});',
+  ].join('\n');
+  return (
+    <div className="space-y-5">
+      <PageIntro title="Operator & agent runbook" text="Run the existing control plane and connect a signing host without moving signing authority into ASGUARD." />
+      <Card title="Run locally" kicker="API :8080 · dashboard :3000">
+        <div className="grid gap-3 md:grid-cols-2">
+          {[
+            ['01 · Install', 'git clone <repository>\ncd ASGUARD\nnpm install'],
+            ['02 · Configure', 'Copy .env.example to .env. Configure runtime/operator credentials, a server-only ASGUARD_AUDIT_KEY, and matching Ed25519 attestation key paths. Share only the public key with hosts.'],
+            ['03 · Backend', 'npm run dev:backend\n# http://localhost:8080'],
+            ['04 · Frontend', 'npm run dev:frontend\n# http://localhost:3000'],
+            ['05 · Connect', 'POST /api/agents/connect with agent_id, agent_name, network, and public account_ids; MCP clients can call asguard_connect_agent.'],
+            ['06 · Resolve HITL', 'Run npm run demo:near:hitl. Review and resolve the request from Operations.'],
+          ].map(([title, text]) => <div key={title} className="rounded-xl border p-4"><b className="text-[10px]">{title}</b><pre className="mt-2 whitespace-pre-wrap break-words text-[9px] leading-4 text-slate-600">{text}</pre></div>)}
+        </div>
+      </Card>
+      <Card title="Connect a trusted agent host" kicker="Request → decision → verify">
+        <p className="text-[9px] leading-5 text-slate-600">Agents call <code>POST /api/approvals/near-intent</code> or <code>POST /api/approvals/chain-signature</code> with a runtime Bearer credential. MCP clients call <code>POST /mcp</code>. Poll with <code>GET /api/approvals/:request_id</code>.</p>
+        <pre className="mt-4 overflow-auto whitespace-pre-wrap rounded-xl bg-[#172b3d] p-4 text-[9px] leading-5 text-white"><code>{code}</code></pre>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <p className="rounded-lg bg-slate-50 p-3 text-[9px] leading-4"><b>Mandatory host behavior</b><br />Put all signing/submission inside the callback. It runs only after signature, expiry, hash, agent, network/domain, and bounds verify. Never proceed after rejection or timeout.</p>
+          <p className="rounded-lg bg-slate-50 p-3 text-[9px] leading-4"><b>Chain Signatures</b><br />Bind exact unsigned bytes, target network, derivation path, and signer contract. Foreign-chain requests require HITL. ASGUARD never calls MPC.</p>
+        </div>
+      </Card>
+      <Card title="Approval and observation demos" kicker="Host signs only in the optional testnet demo">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {[
+            ['npm run demo:near:approve', 'Low-risk approval and host verification'],
+            ['npm run demo:near:hitl', 'HITL resolved from Operations'],
+            ['npm run demo:near:block', 'Expired intent rejection'],
+            ['npm run demo:agent-guard', 'Callback blocked until verification'],
+            ['npm run demo:watch', 'Register and inspect public account activity'],
+            ['npm run demo:near:approve:submit', 'Opt-in testnet transfer, maximum 0.01 NEAR'],
+          ].map(([cmd, text]) => <div key={cmd} className="rounded-lg border p-3"><code className="text-[9px] font-bold text-sky-950">{cmd}</code><p className="mt-1 text-[8px] text-slate-500">{text}</p></div>)}
+        </div>
+        <p className="mt-3 text-[9px] text-slate-500">The server-only audit HMAC key and attestation private key never go to the host. Hosts receive only the Ed25519 public key. ASGUARD never signs or broadcasts transactions.</p>
+      </Card>
+    </div>
+  );
+}

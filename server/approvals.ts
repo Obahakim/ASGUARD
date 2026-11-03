@@ -110,42 +110,45 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
   const activity: AgentActivityEvent = { type:'agent_activity', timestamp:new Date().toISOString(), id:`evt_${crypto.randomUUID()}`, agent_id:request.agent_id, agent_name:request.agent_name, action:request.action, risk_level:request.risk_level === 'critical' ? 'high' : request.risk_level, chain:request.chain ?? chain, network:resolvedNetwork, details:{ ...(request.details ?? {}), ...(nearIntent ? { near_intent: nearIntent.movement, declared_amount_usd: nearIntent.movement.amount_usd } : {}) } };
   const result = await engine.processActivity(activity, { amount_usd:amountUsd, ip_address:request.ip_address, device_id:request.device_id, contract_address:nearIntent ? undefined : request.contract_address }, policy);
   const evaln = result.evaluation;
+  const intentPolicy = nearIntent ? evaluateNearIntentPolicy(nearIntent, policy, new Date(), verifiedUsdValue) : undefined;
+  const hardBlockReason = intentPolicy?.blockedReasons[0]
+    ?? (amountUsd !== undefined && amountUsd > policy.max_auto_trade_usd ? 'budget_overrun' : undefined);
+  const targetAdapter = hardBlockReason ? undefined : chainRegistry.resolve(chain ?? request.network, chain ? resolvedNetwork : undefined);
+  const requiresHuman = !hardBlockReason && (
+    evaln.action === 'halt_and_hitl'
+    || request.risk_level === 'high'
+    || request.risk_level === 'critical'
+    || Boolean(intentPolicy?.requiresHuman)
+    || request.payload_domain === 'near-chain-signature'
+    || (chain === 'near' && request.payload_domain !== 'near-intent')
+    || Boolean(targetAdapter && 'approvalOnly' in targetAdapter)
+  );
+  const preflightReasons = intentPolicy?.humanReviewReasons ?? (requiresHuman ? evaln.rules_triggered.map((rule) => rule.rule_id) : []);
   let intelligenceResult;
   try {
     intelligenceResult = await intelligence.analyze({
       kind: 'approval', agent_id: request.agent_id, payload: nearIntent?.intent as unknown as Record<string, unknown> | undefined,
-      details: { action: request.action, risk_level: request.risk_level, anomaly_score: evaln.anomaly_score, rules_triggered: evaln.rules_triggered },
+      details: { action: request.action, risk_level: request.risk_level, verified_amount_usd: amountUsd, anomaly_score: evaln.anomaly_score, rules_triggered: evaln.rules_triggered },
     });
     if (intelligenceResult) {
       try { recordIntelligence(intent.id, intelligenceResult); } catch (error) { logger.warn('[Intelligence] Could not persist optional approval analysis', { error: String(error) }); }
       try {
         auditAnchor.record('approval_intelligence', { intent_id: intent.id, agent_id: request.agent_id, ...intelligenceResult });
         broadcast({ type: 'audit_log', timestamp: intelligenceResult.generated_at, id: `intel_${crypto.randomUUID()}`, agent_id: request.agent_id,
-          action: 'Optional approval intelligence attached', resource: intent.id, status: 'success', details: intelligenceResult });
+          action: `AI ${intelligenceResult.provider}: ${intelligenceResult.summary} [${intelligenceResult.signals.map((signal) => signal.code).join(', ') || 'no signals'}]`,
+          resource: intent.id, status: 'success', details: intelligenceResult });
       } catch (error) { logger.warn('[Intelligence] Could not audit optional approval analysis', { error: String(error) }); }
     }
   } catch (error) {
     logger.warn('[Intelligence] Optional approval analysis unavailable', { error: String(error) });
   }
   const issue = (action:'approve_once'|'approve_session') => issueApprovalAttestation({ decision_id:`dec_${crypto.randomUUID()}`, intent_id:intent.id, agent_id:request.agent_id, payload_hash:request.payload_hash, network, chain:request.chain ?? chain, payload_domain:request.payload_domain, derivation_path:request.derivation_path, signer_contract:request.signer_contract, intent_type:nearIntent?.intent.intent_type ?? request.intent_type, action, max_amount_usd:request.payload_domain === 'near-chain-signature' ? undefined : amountUsd, expires_at:new Date(Date.now()+DEFAULT_APPROVAL_TTL_MS).toISOString(), anomaly_score:evaln.anomaly_score, rules_triggered:evaln.rules_triggered, issued_at:new Date().toISOString(), policy_version:policy.version });
-  const intentPolicy = nearIntent ? evaluateNearIntentPolicy(nearIntent, policy, new Date(), verifiedUsdValue) : undefined;
-  const hardBlockReason = intentPolicy?.blockedReasons[0]
-    ?? (amountUsd !== undefined && amountUsd > policy.max_auto_trade_usd ? 'budget_overrun' : undefined);
   if (hardBlockReason) {
     const preflight = { kind: nearIntent ? 'near_intent_policy_and_price' as const : 'approval_policy' as const, status: 'blocked' as const, checked_at: new Date().toISOString(), reasons: [...(intentPolicy?.blockedReasons ?? []), hardBlockReason] };
     recordPreflight(intent.id, preflight);
     transitionTransactionIntent(intent.id, 'blocked'); auditAnchor.record('approval_rejected',{intent_id:intent.id,agent_id:request.agent_id,reason:hardBlockReason,actor_id:identity.id});
     const response: SignApprovalResponse = { status:'rejected', intent_id:intent.id, reason:hardBlockReason, anomaly:evaln, preflight, intelligence: intelligenceResult }; return cacheResponse(response);
   }
-  const targetAdapter = chainRegistry.resolve(chain ?? request.network, chain ? resolvedNetwork : undefined);
-  const requiresHuman = evaln.action === 'halt_and_hitl'
-    || request.risk_level === 'high'
-    || request.risk_level === 'critical'
-    || Boolean(intentPolicy?.requiresHuman)
-    || request.payload_domain === 'near-chain-signature'
-    || (chain === 'near' && request.payload_domain !== 'near-intent')
-    || 'approvalOnly' in targetAdapter;
-  const preflightReasons = intentPolicy?.humanReviewReasons ?? (requiresHuman ? evaln.rules_triggered.map((rule) => rule.rule_id) : []);
   const preflight = { kind: nearIntent ? 'near_intent_policy_and_price' as const : 'approval_policy' as const, status: requiresHuman ? 'review_required' as const : 'passed' as const, checked_at: new Date().toISOString(), reasons: preflightReasons };
   recordPreflight(intent.id, preflight);
   if (!requiresHuman) {

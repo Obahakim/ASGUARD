@@ -7,7 +7,7 @@ import {
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 
-export type AsguardPayloadDomain = 'near-intent' | 'near-chain-signature';
+export type AsguardPayloadDomain = 'near-intent' | 'near-chain-signature' | 'near-transfer';
 export type AsguardRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
 export interface AsguardApprovalDecision {
@@ -81,10 +81,12 @@ function validateOptions<TPayload>(options: AsguardApprovalOptions<TPayload>): v
   if (options.payloadDomain === 'near-intent') {
     if (!options.expectedVerifier) throw new Error('expectedVerifier is required for NEAR Intent approval.');
     if (options.network !== 'near:mainnet' && options.network !== 'near:testnet') throw new Error('NEAR Intent network must be near:mainnet or near:testnet.');
-  } else {
+  } else if (options.payloadDomain === 'near-chain-signature') {
     if (!options.chain || options.chain === 'near' || !options.network.startsWith(`${options.chain}:`)) throw new Error('Chain Signature approval requires an explicit foreign chain and namespaced network.');
     if (!options.derivationPath || !/^[A-Za-z0-9._:/-]{1,128}$/.test(options.derivationPath)) throw new Error('A valid derivationPath is required.');
     if (!options.signerContract) throw new Error('signerContract is required for Chain Signature approval.');
+  } else if (options.network !== 'near:testnet') {
+    throw new Error('NEAR transfer approval is testnet-only.');
   }
 }
 
@@ -134,7 +136,7 @@ export async function withAsguardApproval<TPayload, TResult>(
       risk_level: options.riskLevel, idempotency_key: options.idempotencyKey, network: options.network,
       near_intent: options.payload, ...(options.ipAddress ? { ip_address: options.ipAddress } : {}), ...(options.deviceId ? { device_id: options.deviceId } : {}),
     };
-  } else {
+  } else if (options.payloadDomain === 'near-chain-signature') {
     const bytes = typeof options.payload === 'string' ? Buffer.from(options.payload, 'utf8') : Buffer.from(options.payload as unknown as Uint8Array);
     if (bytes.length === 0) throw new Error('Chain Signature payload must not be empty.');
     canonicalPayload = options.payload;
@@ -144,6 +146,18 @@ export async function withAsguardApproval<TPayload, TResult>(
       agent_id: options.agentId, agent_name: options.agentName, action: options.action ?? 'chain-signature', risk_level: options.riskLevel,
       payload_hash: payloadHash, payload_domain: 'near-chain-signature', network: options.network, chain: options.chain,
       derivation_path: options.derivationPath, signer_contract: options.signerContract, idempotency_key: options.idempotencyKey,
+      ...(options.ipAddress ? { ip_address: options.ipAddress } : {}), ...(options.deviceId ? { device_id: options.deviceId } : {}),
+    };
+  } else {
+    const bytes = typeof options.payload === 'string' ? Buffer.from(options.payload, 'utf8') : Buffer.from(options.payload as unknown as Uint8Array);
+    if (bytes.length === 0) throw new Error('NEAR transfer description must not be empty.');
+    canonicalPayload = options.payload;
+    payloadHash = createHash('sha256').update(bytes).digest('hex');
+    endpoint = '/api/approvals/sign-request';
+    body = {
+      agent_id: options.agentId, agent_name: options.agentName, action: options.action ?? 'near-testnet-transfer',
+      risk_level: options.riskLevel, payload_hash: payloadHash, payload_domain: 'near-transfer',
+      network: options.network, chain: 'near', idempotency_key: options.idempotencyKey,
       ...(options.ipAddress ? { ip_address: options.ipAddress } : {}), ...(options.deviceId ? { device_id: options.deviceId } : {}),
     };
   }
@@ -177,7 +191,7 @@ export async function withAsguardApproval<TPayload, TResult>(
     expectedPayloadHash: payloadHash,
     expectedPayloadDomain: options.payloadDomain,
     expectedNetwork: options.network,
-    expectedChain: options.payloadDomain === 'near-intent' ? 'near' : options.chain,
+    expectedChain: options.payloadDomain === 'near-intent' || options.payloadDomain === 'near-transfer' ? 'near' : options.chain,
     expectedDerivationPath: options.derivationPath,
     expectedSignerContract: options.payloadDomain === 'near-chain-signature' ? options.signerContract : undefined,
     maxAmountUsd: options.expectedMaxAmountUsd,

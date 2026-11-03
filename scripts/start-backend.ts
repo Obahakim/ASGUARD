@@ -2,6 +2,8 @@ import { getAuditSigningKey } from '../server/auditConfig';
 import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 
+delete process.env.ASGUARD_DEMO_NEAR_PRIVATE_KEY;
+
 function validateEndpoint(name: string, value: string): void {
   let endpoint: URL;
   try {

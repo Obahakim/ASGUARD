@@ -115,7 +115,7 @@ const walletWatcher = new NearWalletWatcher({
           if (!result) return;
           auditAnchor.record('wallet_activity_intelligence', { watch_id: activity.watch_id, agent_id: activity.agent_id, ...result });
           const enrichment: Event = { type: 'audit_log', timestamp: result.generated_at, id: `watch_intel_${crypto.randomUUID()}`,
-            agent_id: activity.agent_id, action: 'Optional wallet activity intelligence attached', resource: activity.account_id,
+            agent_id: activity.agent_id, action: `AI ${result.provider}: ${result.summary} [${result.signals.map((signal) => signal.code).join(', ') || 'no signals'}]`, resource: activity.account_id,
             status: 'success', details: result };
           bridge.broadcastEvent(enrichment);
           logger.broadcastEvent(enrichment);
@@ -391,6 +391,11 @@ app.post('/api/submissions/report', apiAuthenticator.requireAnyRole('runtime', '
       intent_id: intent.id, agent_id: intent.agent_id, network: intent.network, payload_hash: intent.payload_hash,
       tx_hash: intent.tx_hash, actor_id: req.asguardIdentity.id, reporter_is_host: true,
     });
+    const event: Event = { type: 'audit_log', timestamp: intent.submitted_at ?? new Date().toISOString(), id: `submission_${crypto.randomUUID()}`,
+      agent_id: intent.agent_id, action: `Host reported testnet transaction ${report.tx_hash}`, resource: intent.id,
+      status: 'success', details: { tx_hash: report.tx_hash, payload_hash: report.payload_hash, prevention_claim: false } };
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
     res.json({ success: true, intent });
   } catch (error) {
     res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid transaction submission report.' });

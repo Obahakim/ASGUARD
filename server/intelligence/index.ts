@@ -33,7 +33,8 @@ function heuristicAnalysis(input: IntelligenceInput): IntelligenceResult {
   const signals: IntelligenceSignal[] = [];
   const text = normalizedText(input);
   const slippage = typeof input.payload?.max_slippage_bps === 'number' ? input.payload.max_slippage_bps : undefined;
-  const amountUsd = typeof input.payload?.amount_usd === 'number' ? input.payload.amount_usd : undefined;
+  const amountUsd = typeof input.payload?.amount_usd === 'number' ? input.payload.amount_usd
+    : typeof input.details?.verified_amount_usd === 'number' ? input.details.verified_amount_usd : undefined;
 
   if (slippage !== undefined && slippage > 500) {
     signals.push({ code: 'bad_trade', confidence: 0.75, explanation: `Requested slippage is ${slippage} basis points; review the trade terms.` });

@@ -11,5 +11,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["agent-sdk/**/*.ts", "scripts/demo-near.ts", "scripts/demo-agent-guard.ts", "scripts/demo-watch.ts"]
+  "include": ["agent-sdk/**/*.ts", "scripts/demo-near.ts", "scripts/demo-agent-guard.ts", "scripts/demo-watch.ts", "scripts/demo-near-approve-submit.ts"]
 }

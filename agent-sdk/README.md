@@ -32,6 +32,8 @@ const result = await withAsguardApproval({
 
 The `expectedMaxAmountUsd` value is a host-side ceiling. If ASGUARD cannot verify a fresh price and the resulting attestation does not carry a value bound, the SDK rejects before the callback. Do not catch an approval error and continue to signing.
 
+For host-built NEAR testnet transfers, the `near-transfer` payload domain hashes the exact serialized transfer description and is testnet-only. ASGUARD requires HITL for this generic NEAR signing request; the callback runs only after the SDK verifies the Ed25519 attestation. The host, not ASGUARD, signs and broadcasts.
+
 ## Chain Signatures integration
 
 ```ts
