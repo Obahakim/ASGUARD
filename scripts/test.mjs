@@ -14,11 +14,11 @@ function findTests(directory) {
   });
 }
 
-const testFiles = ['server', 'agent-sdk']
+const testFiles = ['server', 'agent-sdk', 'cli']
   .flatMap((directory) => findTests(path.join(repositoryRoot, directory)))
   .map((filePath) => path.relative(repositoryRoot, filePath))
   .sort();
-if (testFiles.length === 0) throw new Error('No server or agent-sdk test files were found.');
+if (testFiles.length === 0) throw new Error('No server, agent-sdk, or cli test files were found.');
 
 const result = spawnSync(process.execPath, [
   '--require', './scripts/test-preload.cjs',
