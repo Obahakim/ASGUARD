@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isValidNearAccountId, NearWalletWatcher, NearWalletWatchStore } from './nearWalletWatch';
+import { isValidNearAccountId, NearWalletWatcher, NearWalletWatchStore, registerAgentNearAccounts } from './nearWalletWatch';
 
 test('validates named and implicit NEAR account IDs', () => {
   assert.equal(isValidNearAccountId('bot.near'), true);
@@ -11,6 +11,25 @@ test('validates named and implicit NEAR account IDs', () => {
   assert.equal(isValidNearAccountId('.bot.near'), false);
   assert.equal(isValidNearAccountId('bot..near'), false);
   assert.equal(isValidNearAccountId('A.near'), false);
+});
+
+test('agent connection registers unique public accounts and validates the whole list first', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-agent-connect-test-'));
+  const store = new NearWalletWatchStore(path.join(directory, 'watches.json'));
+  try {
+    const wallets = registerAgentNearAccounts(store, {
+      agent_id: 'swap-agent', agent_name: 'Swap Agent', network: 'near:testnet',
+      account_ids: ['bot.testnet', 'bot.testnet', 'treasury.testnet'],
+    });
+    assert.deepEqual(wallets.map((wallet) => wallet.account_id), ['bot.testnet', 'treasury.testnet']);
+    assert.equal(store.list('swap-agent').length, 2);
+    assert.throws(() => registerAgentNearAccounts(store, {
+      agent_id: 'bad-agent', agent_name: 'Bad Agent', network: 'near:testnet', account_ids: ['valid.testnet', 'invalid/account'],
+    }), /valid public NEAR account IDs/i);
+    assert.equal(store.list('bad-agent').length, 0);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('wallet watches persist registrations, deactivation, and bounded observed activity', () => {

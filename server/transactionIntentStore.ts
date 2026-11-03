@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { TransactionIntent, TransactionIntentStatus, TransactionPreflight } from './types';
+import type { IntelligenceResult } from './intelligence';
 
 const intents = new Map<string, TransactionIntent>();
 const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.asguard', 'transaction_intents.json');
@@ -106,6 +107,37 @@ export function recordPreflight(id: string, preflight: TransactionPreflight): Tr
     preflight: structuredClone(preflight),
     updated_at: now(),
   };
+  intents.set(id, updated);
+  try {
+    persistLocalIntents();
+  } catch (error) {
+    intents.set(id, intent);
+    throw error;
+  }
+  return updated;
+}
+
+export function recordIntelligence(id: string, intelligence: IntelligenceResult): TransactionIntent {
+  const intent = intents.get(id);
+  if (!intent) throw new Error('transaction intent not found');
+  const updated = { ...intent, intelligence: structuredClone(intelligence), updated_at: now() };
+  intents.set(id, updated);
+  try {
+    persistLocalIntents();
+  } catch (error) {
+    intents.set(id, intent);
+    throw error;
+  }
+  return updated;
+}
+
+export function recordSubmittedTransaction(id: string, txHash: string): TransactionIntent {
+  const intent = intents.get(id);
+  if (!intent) throw new Error('transaction intent not found');
+  if (intent.status === 'submitted' && intent.tx_hash === txHash) return intent;
+  if (intent.status !== 'approved') throw new Error('transaction intent must be approved before submission reporting');
+  const submittedAt = now();
+  const updated = { ...intent, status: 'submitted' as const, tx_hash: txHash, submitted_at: submittedAt, updated_at: submittedAt };
   intents.set(id, updated);
   try {
     persistLocalIntents();

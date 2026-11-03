@@ -189,6 +189,29 @@ export class NearWalletWatchStore {
   get activityCount(): number { return this.activity.length; }
 }
 
+export function registerAgentNearAccounts(
+  store: NearWalletWatchStore,
+  input: { agent_id: unknown; agent_name: unknown; network: unknown; account_ids: unknown }
+): WatchedNearWallet[] {
+  if (typeof input.agent_id !== 'string' || !input.agent_id.trim() || input.agent_id.length > 128
+    || typeof input.agent_name !== 'string' || !input.agent_name.trim() || input.agent_name.length > 128
+    || (input.network !== 'near:testnet' && input.network !== 'near:mainnet')
+    || !Array.isArray(input.account_ids) || input.account_ids.length < 1 || input.account_ids.length > 20
+    || input.account_ids.some((accountId) => typeof accountId !== 'string')) {
+    throw new Error('agent_id, agent_name, a supported NEAR network, and 1-20 account_ids are required.');
+  }
+  const accountIds = [...new Set((input.account_ids as string[]).map((accountId) => accountId.trim()))];
+  if (accountIds.some((accountId) => !isValidNearAccountId(accountId))) {
+    throw new Error('account_ids must contain valid public NEAR account IDs.');
+  }
+  return accountIds.map((accountId) => store.register({
+    agent_id: input.agent_id as string,
+    account_id: accountId,
+    network: input.network as string,
+    label: input.agent_name as string,
+  }).wallet);
+}
+
 export interface NearWalletWatchStatus {
   healthy: boolean;
   running: boolean;

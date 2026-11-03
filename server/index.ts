@@ -25,7 +25,7 @@ import { runtimeBridge } from './aos/runtimeBridge';
 import { auditAnchor } from './aos/auditAnchor';
 import { providerRegistry } from './aos/providerRegistry';
 import { runtimeConfig } from './aos/runtimeConfig';
-import { createTransactionIntent, getTransactionIntent, listTransactionIntents, transitionTransactionIntent } from './transactionIntentStore';
+import { createTransactionIntent, getTransactionIntent, listTransactionIntents, recordSubmittedTransaction, transitionTransactionIntent } from './transactionIntentStore';
 import { consumeWebSocketTicket, issueWebSocketTicket } from './wsTicket';
 import { nearAdapter } from './aos/nearAdapter';
 import { chainRegistry } from './aos/chainRegistry';
@@ -37,7 +37,10 @@ import {
 } from './approvals';
 import { notifier } from './notifier';
 import { handleMcpRequest } from './mcp';
-import { NearWalletWatchStore, NearWalletWatcher, type NearWalletWatchStatus, type WatchedNearActivity, type WatchedNearWallet } from './nearWalletWatch';
+import { NearWalletWatchStore, NearWalletWatcher, registerAgentNearAccounts, type NearWalletWatchStatus, type WatchedNearActivity, type WatchedNearWallet } from './nearWalletWatch';
+import { findMatchingSubmittedIntent } from './submissions/correlation';
+import { intelligence } from './intelligence';
+import { validateSubmissionReport } from './submissions/report';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -93,10 +96,32 @@ const walletWatcher = new NearWalletWatcher({
   store: walletWatchStore,
   audit: (type, payload) => { auditAnchor.record(type, payload); },
   onActivity: (activity) => {
+    const matchedIntent = findMatchingSubmittedIntent(activity, listTransactionIntents());
     const event: Event = { type: 'audit_log', timestamp: activity.observed_at, id: activity.id, agent_id: activity.agent_id,
-      action: 'NEAR wallet activity observed', resource: activity.account_id, status: 'success', details: activity };
+      action: matchedIntent ? 'NEAR wallet activity matched reported submission' : 'NEAR wallet activity observed without matching submission',
+      resource: activity.account_id, status: 'success', details: { ...activity, matched_approval: Boolean(matchedIntent), intent_id: matchedIntent?.id } };
     bridge.broadcastEvent(event);
     logger.broadcastEvent(event);
+    if (!matchedIntent) {
+      const observed = { ...activity, matched_approval: false, prevention_claim: false };
+      auditAnchor.record('unmatched_wallet_activity', observed);
+      const anomaly: Event = { type: 'anomaly_detected', timestamp: activity.observed_at, id: `unmatched_${crypto.randomUUID()}`,
+        agent_id: activity.agent_id, anomaly_type: 'unmatched_public_activity', confidence_score: 0.8,
+        details: { activity, matched_approval: false, prevention_claim: false, explanation: 'Observed activity did not match a reported approved transaction; this does not mean ASGUARD prevented it.' } };
+      bridge.broadcastEvent(anomaly);
+      logger.broadcastEvent(anomaly);
+      void intelligence.analyze({ kind: 'watch_activity', agent_id: activity.agent_id, details: observed, matched_approval: false })
+        .then((result) => {
+          if (!result) return;
+          auditAnchor.record('wallet_activity_intelligence', { watch_id: activity.watch_id, agent_id: activity.agent_id, ...result });
+          const enrichment: Event = { type: 'audit_log', timestamp: result.generated_at, id: `watch_intel_${crypto.randomUUID()}`,
+            agent_id: activity.agent_id, action: 'Optional wallet activity intelligence attached', resource: activity.account_id,
+            status: 'success', details: result };
+          bridge.broadcastEvent(enrichment);
+          logger.broadcastEvent(enrichment);
+        })
+        .catch((error) => logger.warn('[Intelligence] Optional wallet activity analysis unavailable', { error: String(error) }));
+    }
   },
 });
 walletWatcher.start();
@@ -225,6 +250,7 @@ app.post('/mcp', apiAuthenticator.authenticationMiddleware(), (req: Request, res
     requestChainSignatureApproval: async (input, identity) => ({ ...await processChainSignatureApproval(input, identity, anomalyEngine, (event) => { bridge.broadcastEvent(event as Event); logger.broadcastEvent(event as Event); }) }),
     getTransactionStatus: getTransactionIntent,
     getApprovalStatus: getApprovalResult,
+    connectAgent: (input, identity) => connectAgent(input, identity),
     registerNearWallet: (input, identity) => registerWalletWatch(input, identity),
     listNearWallets: (agentId) => walletWatchStore.list(agentId),
     getNearWalletActivity: (input) => walletWatchStore.recentActivity({
@@ -246,6 +272,32 @@ function registerWalletWatch(input: Record<string, unknown>, identity: NonNullab
   });
   return result.wallet;
 }
+
+function connectAgent(input: Record<string, unknown>, identity: NonNullable<Request['asguardIdentity']>) {
+  const agentId = input.agent_id as string;
+  const agentName = input.agent_name as string;
+  const network = input.network as string;
+  const wallets = registerAgentNearAccounts(walletWatchStore, {
+    agent_id: input.agent_id, agent_name: input.agent_name, network: input.network, account_ids: input.account_ids,
+  });
+  const details = { agent_id: agentId, agent_name: agentName, network, account_ids: wallets.map((wallet) => wallet.account_id), watch_ids: wallets.map((wallet) => wallet.id), actor_id: identity.id };
+  auditAnchor.record('agent_connected', details);
+  const event: Event = { type: 'audit_log', timestamp: new Date().toISOString(), id: `evt_${crypto.randomUUID()}`,
+    agent_id: agentId, action: 'Agent connected; public NEAR accounts added to read-only watch', resource: agentId,
+    status: 'success', details };
+  bridge.broadcastEvent(event);
+  logger.broadcastEvent(event);
+  return { agent_id: agentId, agent_name: agentName, network, accounts: wallets };
+}
+
+app.post('/api/agents/connect', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ success: false, error: 'Authentication required.' }); return; }
+    res.status(201).json({ success: true, ...connectAgent(req.body as Record<string, unknown>, req.asguardIdentity) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid agent connection.' });
+  }
+});
 
 app.post('/api/wallet-watch', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
   try {
@@ -329,6 +381,21 @@ app.post('/api/auth/ws-ticket', apiAuthenticator.requireAnyRole('admin', 'operat
 
 // Transaction intent lifecycle. Idempotency prevents duplicate execution requests.
 app.get('/api/transactions', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (_req: Request, res: Response) => res.json({ success: true, intents: listTransactionIntents() }));
+
+app.post('/api/submissions/report', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
+  try {
+    if (!req.asguardIdentity) { res.status(401).json({ success: false, error: 'Authentication required.' }); return; }
+    const report = validateSubmissionReport(req.body, getTransactionIntent(String(req.body?.intent_id ?? '')));
+    const intent = recordSubmittedTransaction(report.intent_id, report.tx_hash);
+    auditAnchor.record('approved_testnet_submission_reported', {
+      intent_id: intent.id, agent_id: intent.agent_id, network: intent.network, payload_hash: intent.payload_hash,
+      tx_hash: intent.tx_hash, actor_id: req.asguardIdentity.id, reporter_is_host: true,
+    });
+    res.json({ success: true, intent });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid transaction submission report.' });
+  }
+});
 
 app.post('/api/transactions', apiAuthenticator.requireAnyRole('runtime', 'admin'), (req: Request, res: Response) => {
   try {

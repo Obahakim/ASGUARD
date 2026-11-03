@@ -13,6 +13,7 @@ export interface McpServices {
   requestChainSignatureApproval(input: Record<string, unknown>, identity: ApiIdentity): Promise<Record<string, unknown>>;
   getTransactionStatus(id: string): unknown;
   getApprovalStatus(id: string): unknown;
+  connectAgent(input: Record<string, unknown>, identity: ApiIdentity): Record<string, unknown>;
   registerNearWallet(input: Record<string, unknown>, identity: ApiIdentity): WatchedNearWallet;
   listNearWallets(agentId?: string): WatchedNearWallet[];
   getNearWalletActivity(input: Record<string, unknown>): WatchedNearActivity[];
@@ -31,6 +32,16 @@ const tools = [
     name: 'asguard_get_policy',
     description: 'Read the active ASGUARD safety policy before proposing an agent action.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'asguard_connect_agent',
+    description: 'Register an agent and automatically add its public NEAR accounts to ASGUARD read-only wallet watch. This does not block or authorize chain execution.',
+    inputSchema: { type: 'object', required: ['agent_id', 'agent_name', 'network', 'account_ids'], properties: {
+      agent_id: { type: 'string', minLength: 1, maxLength: 128 },
+      agent_name: { type: 'string', minLength: 1, maxLength: 128 },
+      network: { type: 'string', enum: ['near:testnet', 'near:mainnet'] },
+      account_ids: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 2, maxLength: 64 } },
+    }, additionalProperties: false },
   },
   {
     name: 'asguard_watch_near_wallet',
@@ -242,6 +253,12 @@ export function handleMcpRequest(req: Request, res: Response, services: McpServi
             return;
           }
           value = services.getPolicy();
+        } else if (name === 'asguard_connect_agent') {
+          if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
+            res.status(403).json(errorResponse(id, -32003, 'Insufficient role to connect an agent.'));
+            return;
+          }
+          value = services.connectAgent(args, req.asguardIdentity);
         } else if (name === 'asguard_watch_near_wallet') {
           if (!req.asguardIdentity?.roles.some((role) => ['runtime', 'admin'].includes(role))) {
             res.status(403).json(errorResponse(id, -32003, 'Insufficient role to register a wallet watch.'));

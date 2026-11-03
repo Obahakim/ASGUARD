@@ -1,3 +1,5 @@
+import type { IntelligenceResult } from './intelligence';
+
 export interface AsguardPolicy {
 	max_auto_trade_usd: number;
 	strict_anomaly_detection: boolean;
@@ -250,6 +252,9 @@ export interface TransactionIntent {
 	created_at: string;
 	updated_at: string;
 	preflight?: TransactionPreflight;
+	intelligence?: IntelligenceResult;
+	tx_hash?: string;
+	submitted_at?: string;
 }
 
 export interface ApprovalAttestation {
@@ -272,6 +277,7 @@ export interface SignApprovalResponse {
 	status: 'approved' | 'pending_hitl' | 'rejected'; decision_id?: string; intent_id?: string;
 	attestation?: ApprovalAttestation; reason?: string; anomaly?: EvaluationResult; request_id?: string;
 	preflight?: TransactionPreflight;
+	intelligence?: IntelligenceResult;
 }
 export interface NotifierAlert {
 	agent_id: string; score: number; action: string; amount_usd?: number; request_id: string;
