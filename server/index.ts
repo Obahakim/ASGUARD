@@ -43,6 +43,8 @@ import { intelligence } from './intelligence';
 import { validateSubmissionReport } from './submissions/report';
 import { verifyFinalizedNearTransfer } from './submissions/report';
 import { normalizeNearTransfer } from './aos/nearTransfer';
+import { getApprovalPublicKey } from './attestationConfig';
+import { buildPublicKeyResponse } from './attestationPublicKey';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -83,6 +85,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.sendStatus(200);
   } else {
     next();
+  }
+});
+
+app.get('/api/attestation/public-key', (_req: Request, res: Response) => {
+  try {
+    res.json(buildPublicKeyResponse(getApprovalPublicKey()));
+  } catch {
+    res.status(500).json({ success: false, error: 'Attestation public key is unavailable.' });
   }
 });
 

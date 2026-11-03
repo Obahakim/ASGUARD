@@ -27,6 +27,7 @@
     "demo:watch": "node scripts/run-demo.cjs scripts/demo-watch.ts",
     "demo:near:approve:submit": "node scripts/run-demo.cjs scripts/demo-near-approve-submit.ts",
     "setup": "node --import tsx cli/setup.ts",
+    "connect": "node --import tsx cli/connect.ts",
     "lint": "eslint .",
     "start": "next start",
     "backend:start": "node --env-file=.env --import tsx scripts/start-backend.ts"
