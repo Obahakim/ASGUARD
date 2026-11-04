@@ -25,7 +25,7 @@ async function listen(handler: http.RequestListener): Promise<{ server: http.Ser
 function runConnect(project: string, baseUrl: string, token = runtimeToken, extra: string[] = []) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [
-      '--import', 'tsx', entry, '--project', project, '--yes',
+      '--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, '--project', project, '--yes',
       '--url', baseUrl, '--agent-id', 'test-agent', '--agent-name', 'Test Agent',
       '--network', 'near:testnet', '--accounts', 'alice.testnet', ...extra,
     ], {
@@ -131,16 +131,16 @@ test('connect check emits JSON, returns findings, and refuses the ASGUARD reposi
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-connect-scan-'));
   try {
     fs.writeFileSync(path.join(project, 'agent.js'), 'wallet.sendMoney(1);\n');
-    const scan = spawnSync(process.execPath, ['--import', 'tsx', entry, '--check', '--json', '--project', project], {
+    const scan = spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, '--check', '--json', '--project', project], {
       cwd: root, encoding: 'utf8', shell: false,
     });
     assert.equal(scan.status, 1);
     assert.equal((JSON.parse(scan.stdout) as { findings: unknown[] }).findings.length, 1);
-    const badProject = spawnSync(process.execPath, ['--import', 'tsx', entry, '--check', '--project', path.join(project, 'missing')], {
+    const badProject = spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, '--check', '--project', path.join(project, 'missing')], {
       cwd: root, encoding: 'utf8', shell: false,
     });
     assert.equal(badProject.status, 2);
-    const self = spawnSync(process.execPath, ['--import', 'tsx', entry, '--check', '--project', root], {
+    const self = spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, '--check', '--project', root], {
       cwd: root, encoding: 'utf8', shell: false,
     });
     assert.equal(self.status, 2);

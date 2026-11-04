@@ -168,6 +168,7 @@ function scan(project) {
   walk(project, files);
   const findings = [];
   const allowed = [];
+  const seen = new Set();
   let guarded = 0;
   for (const file of files) {
     const source = fs.readFileSync(file, 'utf8');
@@ -182,6 +183,9 @@ function scan(project) {
         const relative = path.relative(project, file).split(path.sep).join('/');
         if (ranges.some((range) => match.index >= range[0] && match.index < range[1])) guarded += 1;
         else {
+          const findingKey = relative + ':' + line + ':' + rule.id;
+          if (seen.has(findingKey)) continue;
+          seen.add(findingKey);
           const entry = { rule: rule.id, severity: rule.severity, file: relative, line };
           const reason = suppression(lines, line, rule.id);
           if (reason) allowed.push(Object.assign(entry, { reason }));

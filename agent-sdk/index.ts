@@ -6,6 +6,7 @@ import {
 } from '../lib/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import { normalizeNearTransfer } from '../server/aos/nearTransfer';
+import { isAllowedApiEndpoint } from '../server/endpointPolicy';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 
 export type AsguardPayloadDomain = 'near-intent' | 'near-chain-signature' | 'near-transfer';
@@ -68,11 +69,64 @@ export class AsguardApprovalError extends Error {
   }
 }
 
+export interface AsguardReportSubmissionOptions {
+  baseUrl: string;
+  token: string;
+  intentId: string;
+  payloadHash: string;
+  txHash: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+export class AsguardReportError extends Error {
+  constructor(message: string, readonly txHash: string, readonly status?: number) {
+    super(message);
+    this.name = 'AsguardReportError';
+  }
+}
+
+export async function reportSubmission(options: AsguardReportSubmissionOptions): Promise<{ status: string; txHash: string }> {
+  assertHostRuntime();
+  if (typeof options.intentId !== 'string' || !options.intentId.trim()) throw new Error('intentId is required.');
+  if (!/^[\da-f]{64}$/i.test(options.payloadHash)) throw new Error('payloadHash must be a 64-character SHA-256 hash.');
+  if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(options.txHash)) throw new Error('txHash must be a valid NEAR transaction hash.');
+  let apiUrl: URL;
+  try { apiUrl = new URL(options.baseUrl); } catch { throw new Error('baseUrl must be an HTTP(S) ASGUARD origin.'); }
+  if (!isAllowedApiEndpoint(apiUrl)) throw new Error('ASGUARD API connections must use HTTPS outside local development.');
+  if (!options.token || Buffer.byteLength(options.token, 'utf8') < 32) throw new Error('A runtime API token of at least 32 bytes is required.');
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) throw new Error('timeoutMs must be from 100 to 60000.');
+  let response: Response;
+  try {
+    response = await (options.fetchImpl ?? fetch)(`${options.baseUrl.replace(/\/$/, '')}/api/submissions/report`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${options.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent_id: options.intentId, payload_hash: options.payloadHash, tx_hash: options.txHash }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const message = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+      ? 'ASGUARD submission report timed out.' : 'ASGUARD submission report request failed.';
+    throw new AsguardReportError(message, options.txHash);
+  }
+  let body: { error?: unknown; intent?: { status?: unknown; tx_hash?: unknown } } = {};
+  try { body = await response.json() as typeof body; } catch { /* Keep response details out of errors. */ }
+  if (!response.ok) {
+    const serverError = typeof body.error === 'string' ? body.error.slice(0, 300).replaceAll(options.token, '[redacted]') : '';
+    throw new AsguardReportError(serverError || `ASGUARD rejected the transaction report (HTTP ${response.status}).`, options.txHash, response.status);
+  }
+  if (typeof body.intent?.status !== 'string' || typeof body.intent.tx_hash !== 'string') {
+    throw new AsguardReportError('ASGUARD returned an invalid submission report response.', options.txHash, response.status);
+  }
+  return { status: body.intent.status, txHash: body.intent.tx_hash };
+}
+
 export async function connectAgent(options: AsguardConnectAgentOptions): Promise<Record<string, unknown>> {
   assertHostRuntime();
   let apiUrl: URL;
   try { apiUrl = new URL(options.baseUrl); } catch { throw new Error('baseUrl must be an HTTP(S) ASGUARD origin.'); }
-  if (apiUrl.protocol !== 'https:' && !(apiUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(apiUrl.hostname))) {
+  if (!isAllowedApiEndpoint(apiUrl)) {
     throw new Error('ASGUARD API connections must use HTTPS outside local development.');
   }
   if (!options.token || Buffer.byteLength(options.token, 'utf8') < 32) throw new Error('A runtime API token of at least 32 bytes is required.');
@@ -109,7 +163,7 @@ function validateOptions<TPayload>(options: AsguardApprovalOptions<TPayload>): v
   assertHostRuntime();
   let apiUrl: URL;
   try { apiUrl = new URL(options.baseUrl); } catch { throw new Error('baseUrl must be an HTTP(S) ASGUARD origin.'); }
-  if (apiUrl.protocol !== 'https:' && !(apiUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(apiUrl.hostname))) {
+  if (!isAllowedApiEndpoint(apiUrl)) {
     throw new Error('ASGUARD API connections must use HTTPS outside local development.');
   }
   if (!options.token || Buffer.byteLength(options.token, 'utf8') < 32) throw new Error('A runtime API token of at least 32 bytes is required.');

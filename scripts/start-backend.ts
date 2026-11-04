@@ -1,6 +1,7 @@
 import { getAuditSigningKey } from '../server/auditConfig';
 import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
+import { isAllowedApiEndpoint } from '../server/endpointPolicy';
 
 delete process.env.ASGUARD_DEMO_NEAR_PRIVATE_KEY;
 
@@ -11,7 +12,7 @@ function validateEndpoint(name: string, value: string): void {
   } catch {
     throw new Error(`${name} must be a valid HTTP(S) URL.`);
   }
-  if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname))) {
+  if (!isAllowedApiEndpoint(endpoint)) {
     throw new Error(`${name} must use HTTPS except for localhost during local development.`);
   }
 }

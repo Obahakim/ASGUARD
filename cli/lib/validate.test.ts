@@ -10,9 +10,8 @@ test('matches backend HTTPS validation and permits local development HTTP', () =
   assert.throws(() => validateEndpoint('RPC', 'ftp://example.test'), /HTTPS|valid HTTP/);
 });
 
-test('rejects http IPv6 loopback to match start-backend', () => {
-  // This mirrors an existing server quirk: URL.hostname includes brackets for IPv6 loopback.
-  assert.throws(() => validateEndpoint('X', 'http://[::1]:8080'), /HTTPS/);
+test('accepts bracketed IPv6 loopback for local development', () => {
+  assert.equal(validateEndpoint('X', 'http://[::1]:8080').hostname, '[::1]');
 });
 
 test('validates NEAR AI scheme and hostname', () => {

@@ -64,6 +64,17 @@ function backupFile(filePath: string): void {
   fs.unlinkSync(filePath);
 }
 
+function writeDashboardToken(filePath: string, token: string): string {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  if (fs.existsSync(filePath)) {
+    if (fs.readFileSync(filePath, 'utf8') !== token) throw new Error('dashboard-token.txt already exists with a different token; remove it before rotating the dashboard token.');
+    return filePath;
+  }
+  fs.writeFileSync(filePath, token, { flag: 'wx', mode: 0o600 });
+  if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
+  return filePath;
+}
+
 function credentialsByRole(value: string | undefined): { runtime?: string; dashboard?: string } {
   if (isUnsetValue(value)) return {};
   try {
@@ -181,16 +192,19 @@ function secretOutput(
   prompter: Prompter,
   label: string,
   token: string,
+  tokenFile?: string,
 ): Promise<() => void> {
+  const choices = tokenFile ? '[c]opy, [f]ile, or [n]one' : '[c]opy to clipboard or [n]one';
   return prompter.ask(
-    `For ${label}, choose [c]opy to clipboard or [n]one`,
+    `For ${label}, choose ${choices}`,
     {
       default: 'n',
-      validate: (value) => ['c', 'n'].includes(value.toLowerCase()) ? undefined : 'Choose c or n.',
+      validate: (value) => (tokenFile ? ['c', 'f', 'n'] : ['c', 'n']).includes(value.toLowerCase()) ? undefined : 'Choose an available option.',
     },
   ).then((answer) => () => {
     const choice = answer.toLowerCase();
     if (choice === 'c') console.log(copyToClipboard(token) ? 'Copied.' : 'Clipboard unavailable.');
+    if (choice === 'f' && tokenFile) console.log(writeDashboardToken(tokenFile, token));
   });
 }
 
@@ -343,7 +357,7 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   env.setValue('ASGUARD_API_CREDENTIALS', credentials);
   env.setValue('ASGUARD_AUDIT_KEY', audit.value);
   const outputActions = [
-    await secretOutput(prompter, 'dashboard token', dashboard.value),
+    await secretOutput(prompter, 'dashboard token', dashboard.value, path.join(keyDirectory, 'dashboard-token.txt')),
     await secretOutput(prompter, 'runtime token', runtime.value),
   ];
 
@@ -536,7 +550,8 @@ async function run(): Promise<number> {
         console.log(`${key}: ${status}`);
       }
       console.log(`Attestation key pair: ${pairValid ? 'kept' : 'generated'}`);
-      console.log('Setup complete. Dashboard token is stored in .env.');
+      console.log(writeDashboardToken(path.join(keyDirectory, 'dashboard-token.txt'), dashboardToken));
+      console.log('Setup complete.');
       return 0;
     } catch (error) {
       console.error(`Setup failed: ${safeError(error)}`);

@@ -1,6 +1,7 @@
 import { parseApiCredentials } from '../server/auth';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { isAllowedApiEndpoint } from '../server/endpointPolicy';
 
 export interface DemoConfig {
   apiUrl: string;
@@ -59,7 +60,7 @@ export function loadDemoConfig(): DemoConfig {
   } catch {
     throw new Error(`ASGUARD_API_URL must be an HTTP(S) URL. Current value: ${configuredUrl}`);
   }
-  if (apiUrl.protocol !== 'https:' && !(apiUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(apiUrl.hostname))) {
+  if (!isAllowedApiEndpoint(apiUrl)) {
     throw new Error('ASGUARD_API_URL must use HTTPS except for localhost during local development.');
   }
 

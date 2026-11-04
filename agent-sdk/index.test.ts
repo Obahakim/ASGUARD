@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { issueApprovalAttestation } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
-import { AsguardApprovalError, connectAgent, withAsguardApproval } from './index';
+import { AsguardApprovalError, AsguardReportError, connectAgent, reportSubmission, withAsguardApproval } from './index';
 import { normalizeNearTransfer } from '../server/aos/nearTransfer';
 
 const pair = generateKeyPairSync('ed25519');
@@ -111,6 +111,71 @@ test('connectAgent registers watched public accounts through the SDK', async () 
   });
   assert.deepEqual(requestBody?.account_ids, ['sender.testnet']);
   assert.equal(result.success, true);
+});
+
+test('connectAgent accepts bracketed IPv6 loopback with the stub fetch', async () => {
+  let requested = '';
+  const response = await connectAgent({
+    baseUrl: 'http://[::1]:8080', token: 't'.repeat(32), agentId: 'agent-one', agentName: 'Agent One',
+    network: 'near:testnet', accountIds: ['agent.testnet'],
+    fetchImpl: async (input) => {
+      requested = String(input);
+      return jsonResponse({ success: true, agent_id: 'agent-one', accounts: ['agent.testnet'] });
+    },
+  });
+  assert.equal(requested, 'http://[::1]:8080/api/agents/connect');
+  assert.equal(response.success, true);
+});
+
+test('reportSubmission reports verified transaction details and keeps errors secret-safe', async () => {
+  const base = {
+    baseUrl: 'http://[::1]:8080', token: 'report-token-not-for-errors-123456', intentId: 'intent-one',
+    payloadHash: 'a'.repeat(64), txHash: '1'.repeat(43),
+  };
+  let requestBody = '';
+  const result = await reportSubmission({ ...base, fetchImpl: async (input, init) => {
+    assert.equal(String(input), `${base.baseUrl}/api/submissions/report`);
+    assert.equal((init?.headers as Record<string, string>).Authorization, `Bearer ${base.token}`);
+    requestBody = String(init?.body);
+    return jsonResponse({ intent: { status: 'submitted', tx_hash: base.txHash } });
+  } });
+  assert.deepEqual(result, { status: 'submitted', txHash: base.txHash });
+  assert.deepEqual(JSON.parse(requestBody), { intent_id: base.intentId, payload_hash: base.payloadHash, tx_hash: base.txHash });
+
+  for (const status of [400, 500]) {
+    await assert.rejects(reportSubmission({ ...base, fetchImpl: async () => jsonResponse({ error: `server rejected ${base.token}` }, status) }), (error: unknown) => {
+      assert.equal(error instanceof AsguardReportError, true);
+      assert.equal((error as Error).message.includes(base.token), false);
+      assert.equal((error as AsguardReportError).status, status);
+      assert.equal((error as AsguardReportError).txHash, base.txHash);
+      assert.equal((error as Error).message.includes('Authorization'), false);
+      return true;
+    });
+  }
+
+  let calls = 0;
+  for (const invalid of [{ txHash: 'bad' }, { payloadHash: 'bad' }] as const) {
+    await assert.rejects(reportSubmission({ ...base, ...invalid, fetchImpl: async () => { calls += 1; return jsonResponse({}); } }));
+  }
+  assert.equal(calls, 0);
+  await assert.rejects(reportSubmission({ ...base, baseUrl: 'http://example.com', fetchImpl: async () => { calls += 1; return jsonResponse({}); } }));
+  assert.equal(calls, 0);
+});
+
+test('reportSubmission converts request timeout into a safe SDK error', async () => {
+  const options = {
+    baseUrl: 'http://localhost:8080', token: 'report-token-not-for-errors-123456', intentId: 'intent-one',
+    payloadHash: 'a'.repeat(64), txHash: '1'.repeat(43), timeoutMs: 100,
+    fetchImpl: async (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
+    }),
+  };
+  await assert.rejects(reportSubmission(options), (error: unknown) => {
+    assert.equal(error instanceof AsguardReportError, true);
+    assert.match((error as Error).message, /timed out/i);
+    assert.equal((error as Error).message.includes(options.token), false);
+    return true;
+  });
 });
 
 test('HITL timeout denies and never invokes the host callback', async () => {

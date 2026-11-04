@@ -6,12 +6,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { EnvFile } from './lib/envFile';
 import { generateAttestationKeyPair, randomSecretHex } from './lib/generate';
+import { parseApiCredentials } from '../server/auth';
 
 const root = process.cwd();
 const entry = path.join(root, 'cli', 'setup.ts');
 
 function runSetup(args: string[]) {
-  return spawnSync(process.execPath, ['--import', 'tsx', entry, ...args], { cwd: root, encoding: 'utf8', shell: false });
+  return spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, ...args], { cwd: root, encoding: 'utf8', shell: false });
 }
 
 test('setup --yes is secret-safe, validates, round-trips Node env-file, and is idempotent', () => {
@@ -31,13 +32,20 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
     }
     assert.equal(first.stdout.includes(privateKey), false);
     assert.equal(first.stderr.includes(privateKey), false);
-    assert.equal(fs.existsSync(path.join(keys, 'dashboard-token.txt')), false);
+    const dashboardFile = path.join(keys, 'dashboard-token.txt');
+    assert.equal(fs.existsSync(dashboardFile), true);
+    const dashboardToken = parseApiCredentials(env.getValue('ASGUARD_API_CREDENTIALS')).find((credential) => credential.id === 'dashboard-local')?.token;
+    assert.equal(fs.readFileSync(dashboardFile, 'utf8'), dashboardToken);
+    assert.equal(first.stdout.includes(dashboardToken || ''), false);
+    assert.equal(first.stderr.includes(dashboardToken || ''), false);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(dashboardFile).mode & 0o777, 0o600);
     const bytes = fs.readFileSync(envPath);
     const mtime = fs.statSync(envPath).mtimeMs;
     const second = runSetup(['--yes', '--env', envPath, '--key-dir', keys]);
     assert.equal(second.status, 0, second.stderr);
     assert.deepEqual(fs.readFileSync(envPath), bytes);
     assert.equal(fs.statSync(envPath).mtimeMs, mtime);
+    assert.equal(fs.readFileSync(dashboardFile, 'utf8'), dashboardToken);
     assert.match(second.stdout, /ASGUARD_API_CREDENTIALS: unchanged/);
     assert.equal(runSetup(['--check', '--env', envPath]).status, 0);
 
@@ -83,7 +91,7 @@ test('check fails for placeholders, short tokens, mismatched keypairs, and non-H
       fs.writeFileSync(file, text);
       assert.equal(runSetup(['--check', '--env', file]).status, 1);
     }
-    assert.equal(spawnSync(process.execPath, ['--import', 'tsx', entry], { cwd: root, encoding: 'utf8', shell: false }).status, 2);
+    assert.equal(spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry], { cwd: root, encoding: 'utf8', shell: false }).status, 2);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

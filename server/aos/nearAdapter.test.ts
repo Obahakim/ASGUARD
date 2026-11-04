@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 
 import { NearAdapter } from './nearAdapter';
 
+test('NEAR adapter accepts bracketed IPv6 loopback for local endpoints', () => {
+  const adapter = new NearAdapter({ network: 'testnet', rpcUrl: 'http://[::1]:8080', intentsApiUrl: 'https://intents.example' });
+  assert.equal(adapter.rpcUrl, 'http://[::1]:8080');
+  assert.throws(() => new NearAdapter({ network: 'testnet', rpcUrl: 'http://example.com' }), /NEAR endpoints must use HTTPS unless they are loopback development endpoints/);
+});
+
 test('NEAR token valuation rounds spend upward and rejects stale prices', async () => {
   const originalFetch = globalThis.fetch;
   const now = Date.parse('2026-10-26T12:00:00.000Z');

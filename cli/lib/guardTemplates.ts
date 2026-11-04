@@ -6,6 +6,26 @@ function importSpecifier(choice: SdkImportChoice, relativeSpecifier: string): st
   return choice === 'package' ? 'asguard/agent-sdk' : relativeSpecifier;
 }
 
+const reportHelpers = `function defaultExtractTxHash(result) {
+  if (typeof result === 'string') return result;
+  if (!result || typeof result !== 'object') return undefined;
+  return result.txHash || result.transaction?.hash || result.transaction_outcome?.id;
+}
+async function reportAfterSubmit(sdk, values, attestation, decision, result, options) {
+  let txHash;
+  try {
+    txHash = (options.extractTxHash || defaultExtractTxHash)(result);
+    if (typeof txHash !== 'string' || !txHash) throw new Error('No transaction hash was found.');
+    await sdk.reportSubmission({ baseUrl: values.baseUrl, token: values.token, intentId: decision.intentId,
+      payloadHash: attestation.payload_hash, txHash });
+  } catch (error) {
+    try { options.onReportError?.(error, txHash); } catch { /* Reporting must never affect an already submitted transfer. */ }
+    console.error('[ASGUARD] Submission report failed for tx hash ' + String(txHash) + '.');
+  }
+  return result;
+}
+`;
+
 export function buildGuardTemplate(
   language: GuardLanguage,
   choice: SdkImportChoice,
@@ -32,6 +52,7 @@ function config() {
     attestationPublicKey: fs.readFileSync(required('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH'), 'utf8')
   };
 }
+${reportHelpers}
 let initialized;
 function initAsguard() {
   if (!initialized) {
@@ -51,11 +72,16 @@ function approvalOptions(values, payload, payloadDomain, riskLevel, extra) {
     network: values.network, idempotencyKey: randomUUID(), riskLevel, timeoutMs: 180000, ...extra
   };
 }
-async function guardedTransfer(transfer, signAndSubmit, riskLevel = 'high') {
+async function guardedTransfer(transfer, signAndSubmit, options = {}) {
   const sdk = await sdkModule;
   const values = config();
-  return sdk.withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', riskLevel, {}), async ({ attestation, canonicalPayload, decision }) => signAndSubmit({ attestation, canonicalPayload, decision }));
+  return sdk.withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', options.riskLevel || 'high', {}), async ({ attestation, canonicalPayload, decision }) => {
+    const result = await signAndSubmit({ attestation, canonicalPayload, decision });
+    return reportAfterSubmit(sdk, values, attestation, decision, result, options);
+  });
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 async function guardedIntent(intent, options, signAndSubmit) {
   const sdk = await sdkModule;
   const values = config();
@@ -63,6 +89,7 @@ async function guardedIntent(intent, options, signAndSubmit) {
     expectedVerifier: options.expectedVerifier, expectedMaxAmountUsd: options.expectedMaxAmountUsd
   }), async ({ attestation, canonicalPayload, decision }) => signAndSubmit({ attestation, canonicalPayload, decision }));
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 async function guardedChainSignature(payload, options, requestSignature) {
   const sdk = await sdkModule;
   const values = config();
@@ -77,7 +104,8 @@ exports.guardedChainSignature = guardedChainSignature;
 `;
   if (language === 'js') return `import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { connectAgent, withAsguardApproval } from ${specifier};
+import { connectAgent, withAsguardApproval, reportSubmission } from ${specifier};
+${reportHelpers}
 
 function required(name) {
   const value = process.env[name];
@@ -110,19 +138,25 @@ function approvalOptions(values, payload, payloadDomain, riskLevel, extra) {
     network: values.network, idempotencyKey: randomUUID(), riskLevel, timeoutMs: 180000, ...extra
   };
 }
-export function guardedTransfer(transfer, signAndSubmit, riskLevel = 'high') {
+export function guardedTransfer(transfer, signAndSubmit, options = {}) {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', riskLevel, {}), async ({ attestation, canonicalPayload, decision }) => signAndSubmit({ attestation, canonicalPayload, decision }));
+  const sdk = { reportSubmission };
+  return withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', options.riskLevel || 'high', {}), async ({ attestation, canonicalPayload, decision }) => {
+    const result = await signAndSubmit({ attestation, canonicalPayload, decision });
+    return reportAfterSubmit(sdk, values, attestation, decision, result, options);
+  });
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 export function guardedIntent(intent, options, signAndSubmit) {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, intent, 'near-intent', options.riskLevel, {
+  return withAsguardApproval(approvalOptions(values, intent, 'near-intent', options.riskLevel ?? 'high', {
     expectedVerifier: options.expectedVerifier, expectedMaxAmountUsd: options.expectedMaxAmountUsd
   }), async ({ attestation, canonicalPayload, decision }) => signAndSubmit({ attestation, canonicalPayload, decision }));
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 export function guardedChainSignature(payload, options, requestSignature) {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, payload, 'near-chain-signature', options.riskLevel, {
+  return withAsguardApproval(approvalOptions(values, payload, 'near-chain-signature', options.riskLevel ?? 'high', {
     chain: options.chain, derivationPath: options.derivationPath, signerContract: options.signerContract
   }), async ({ attestation, canonicalPayload, decision }) => requestSignature({ attestation, canonicalPayload, decision }));
 }
@@ -130,13 +164,41 @@ export function guardedChainSignature(payload, options, requestSignature) {
 
   return `import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { connectAgent, withAsguardApproval } from ${specifier};
+import { connectAgent, withAsguardApproval, reportSubmission } from ${specifier};
 import type { AsguardApprovalContext, AsguardRiskLevel } from ${specifier};
 
 type ApprovalCallback<TResult> = (context: AsguardApprovalContext<unknown>) => Promise<TResult> | TResult;
-type GuardOptions = { riskLevel: AsguardRiskLevel };
+type GuardOptions = {
+  riskLevel?: AsguardRiskLevel;
+  extractTxHash?: (result: unknown) => string | undefined;
+  onReportError?: (error: unknown, txHash: string | undefined) => void;
+};
 type IntentGuardOptions = GuardOptions & { expectedVerifier: string; expectedMaxAmountUsd: number };
 type ChainSignatureGuardOptions = GuardOptions & { chain: string; derivationPath: string; signerContract: string };
+
+function defaultExtractTxHash(result: unknown): string | undefined {
+  if (typeof result === 'string') return result;
+  if (!result || typeof result !== 'object') return undefined;
+  const value = result as { txHash?: unknown; transaction?: { hash?: unknown }; transaction_outcome?: { id?: unknown } };
+  const candidate = value.txHash ?? value.transaction?.hash ?? value.transaction_outcome?.id;
+  return typeof candidate === 'string' ? candidate : undefined;
+}
+async function reportAfterSubmit<TResult>(
+  sdk: { reportSubmission: typeof reportSubmission }, values: ReturnType<typeof config>,
+  attestation: { payload_hash: string }, decision: { intentId: string }, result: TResult, options: GuardOptions,
+): Promise<TResult> {
+  let txHash: string | undefined;
+  try {
+    txHash = (options.extractTxHash ?? defaultExtractTxHash)(result);
+    if (!txHash) throw new Error('No transaction hash was found.');
+    await sdk.reportSubmission({ baseUrl: values.baseUrl, token: values.token, intentId: decision.intentId,
+      payloadHash: attestation.payload_hash, txHash });
+  } catch (error) {
+    try { options.onReportError?.(error, txHash); } catch { /* An observer cannot undo an already submitted transfer. */ }
+    console.error('[ASGUARD] Submission report failed for tx hash ' + String(txHash) + '.');
+  }
+  return result;
+}
 
 function required(name: string): string {
   const value = process.env[name];
@@ -181,29 +243,34 @@ function approvalOptions<TPayload>(
 export function guardedTransfer<TPayload, TResult>(
   transfer: TPayload,
   signAndSubmit: ApprovalCallback<TResult>,
-  riskLevel: AsguardRiskLevel = 'high',
+  options: GuardOptions = {},
 ): Promise<TResult> {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', riskLevel, {}), async ({ attestation, canonicalPayload, decision }) =>
-    signAndSubmit({ attestation, canonicalPayload, decision }));
+  const sdk = { reportSubmission };
+  return withAsguardApproval(approvalOptions(values, transfer, 'near-transfer', options.riskLevel ?? 'high', {}), async ({ attestation, canonicalPayload, decision }) => {
+    const result = await signAndSubmit({ attestation, canonicalPayload, decision });
+    return reportAfterSubmit(sdk, values, attestation, decision, result, options);
+  });
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 export function guardedIntent<TPayload, TResult>(
   intent: TPayload,
   options: IntentGuardOptions,
   signAndSubmit: ApprovalCallback<TResult>,
 ): Promise<TResult> {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, intent, 'near-intent', options.riskLevel, {
+  return withAsguardApproval(approvalOptions(values, intent, 'near-intent', options.riskLevel ?? 'high', {
     expectedVerifier: options.expectedVerifier, expectedMaxAmountUsd: options.expectedMaxAmountUsd,
   }), async ({ attestation, canonicalPayload, decision }) => signAndSubmit({ attestation, canonicalPayload, decision }));
 }
+// ASGUARD submission reporting currently verifies near-transfer intents only.
 export function guardedChainSignature<TPayload, TResult>(
   payload: TPayload,
   options: ChainSignatureGuardOptions,
   requestSignature: ApprovalCallback<TResult>,
 ): Promise<TResult> {
   const values = config();
-  return withAsguardApproval(approvalOptions(values, payload, 'near-chain-signature', options.riskLevel, {
+  return withAsguardApproval(approvalOptions(values, payload, 'near-chain-signature', options.riskLevel ?? 'high', {
     chain: options.chain, derivationPath: options.derivationPath, signerContract: options.signerContract,
   }), async ({ attestation, canonicalPayload, decision }) => requestSignature({ attestation, canonicalPayload, decision }));
 }

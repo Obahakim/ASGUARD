@@ -1,4 +1,5 @@
 import type { ChainHealth } from './chainHealth';
+import { isAllowedApiEndpoint } from '../endpointPolicy';
 
 export type NearNetwork = 'mainnet' | 'testnet';
 
@@ -36,7 +37,7 @@ export class NearAdapter {
       ?? (network === 'mainnet' ? 'v1.signer' : 'v1.signer-prod.testnet');
     for (const endpoint of [this.rpcUrl, this.intentsApiUrl]) {
       const url = new URL(endpoint);
-      if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+      if (!isAllowedApiEndpoint(url)) {
         throw new Error('NEAR endpoints must use HTTPS unless they are loopback development endpoints.');
       }
     }

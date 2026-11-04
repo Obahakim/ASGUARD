@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { nearAdapter } from './aos/nearAdapter';
 import { isValidNearAccountId, NearWalletWatcher, NearWalletWatchStore, registerAgentNearAccounts } from './nearWalletWatch';
 
 test('validates named and implicit NEAR account IDs', () => {
@@ -11,6 +12,26 @@ test('validates named and implicit NEAR account IDs', () => {
   assert.equal(isValidNearAccountId('.bot.near'), false);
   assert.equal(isValidNearAccountId('bot..near'), false);
   assert.equal(isValidNearAccountId('A.near'), false);
+});
+
+test('wallet watch RPC accepts bracketed IPv6 loopback', async () => {
+  const originalUrl = nearAdapter.rpcUrl;
+  const originalFetch = globalThis.fetch;
+  let requested = '';
+  try {
+    Object.defineProperty(nearAdapter, 'rpcUrl', { value: 'http://[::1]:8080', configurable: true });
+    globalThis.fetch = async (input) => {
+      requested = String(input);
+      return new Response(JSON.stringify({ result: { ok: true } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const watcher = new NearWalletWatcher({ audit: () => undefined, rpc: async () => ({}) });
+    const requestRpc = (watcher as unknown as { requestRpc: (network: 'near:testnet', method: string, params: Record<string, unknown>) => Promise<unknown> }).requestRpc;
+    assert.deepEqual(await requestRpc.call(watcher, 'near:testnet', 'status', {}), { ok: true });
+    assert.equal(requested, 'http://[::1]:8080');
+  } finally {
+    Object.defineProperty(nearAdapter, 'rpcUrl', { value: originalUrl, configurable: true });
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('agent connection registers unique public accounts and validates the whole list first', () => {

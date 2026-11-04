@@ -80,3 +80,9 @@ Wrong: call the wallet first, then ask ASGUARD to log what happened. That is not
 Right: call `withAsguardApproval` with the exact intent/bytes and put every signing or submission operation inside its callback. The callback cannot run after a rejection, timeout, missing attestation, invalid signature, expired attestation, changed payload, or mismatched binding.
 
 `baseUrl`, runtime `token`, `attestationPublicKey`, `agentId`, `agentName`, exact `payload`, `payloadDomain`, `network`, `idempotencyKey`, and `riskLevel` are required. NEAR Intent additionally requires `expectedVerifier`; Chain Signatures requires `chain`, `derivationPath`, and `signerContract`. `pollIntervalMs`, `timeoutMs`, `onPendingHitl`, `expectedMaxAmountUsd`, `ipAddress`, and `deviceId` are optional. The runtime token is used only by this server-side helper and is never logged. The SDK has no audit-key or attestation-private-key input.
+
+## Reporting a submitted transfer
+
+After an approved NEAR transfer completes, call `reportSubmission` with the approved `intentId`, attestation `payloadHash`, and the transaction `txHash`. The SDK reports the transaction to ASGUARD, which verifies it against NEAR testnet RPC. This report API is currently for `near-transfer` intents only.
+
+Generated `guardedTransfer` wrappers do this automatically after `signAndSubmit` returns. If hash extraction or reporting fails, the wrapper reports the failure through `onReportError` and a one-line error log, then returns the original transaction result. It never throws after submission because reporting failed, so callers should still monitor ASGUARD for unmatched activity.

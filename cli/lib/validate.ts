@@ -1,6 +1,7 @@
 import { parseApiCredentials } from '../../server/auth';
 import { getAuditSigningKey } from '../../server/auditConfig';
 import { validateApprovalKeyPair } from '../../server/attestationConfig';
+import { isAllowedApiEndpoint } from '../../server/endpointPolicy';
 
 export function validateEndpoint(name: string, value: string): URL {
   let endpoint: URL;
@@ -9,8 +10,7 @@ export function validateEndpoint(name: string, value: string): URL {
   } catch {
     throw new Error(`${name} must be a valid HTTP(S) URL.`);
   }
-  // This deliberately mirrors scripts/start-backend.ts, including its IPv6 loopback quirk.
-  if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(endpoint.hostname))) {
+  if (!isAllowedApiEndpoint(endpoint)) {
     throw new Error(`${name} must use HTTPS except for localhost during local development.`);
   }
   return endpoint;

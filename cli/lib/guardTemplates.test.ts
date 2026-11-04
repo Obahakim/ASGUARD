@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { buildGuardTemplate } from './guardTemplates';
 
@@ -54,6 +55,62 @@ test('generated TypeScript guard type-checks against SDK and JavaScript guard pa
       assert.equal(source.includes(runtimeToken), false);
     }
   } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('guardedTransfer reports only after signing and never throws after submission', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-report-guard-'));
+  const envKeys = ['ASGUARD_API_URL', 'ASGUARD_RUNTIME_TOKEN', 'ASGUARD_AGENT_ID', 'ASGUARD_AGENT_NAME', 'ASGUARD_NETWORK', 'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH'];
+  const previous = new Map(envKeys.map((key) => [key, process.env[key]]));
+  const originalError = console.error;
+  const shared = globalThis as typeof globalThis & { __asguardReports?: Array<Record<string, unknown>>; __asguardReportFailure?: boolean };
+  try {
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ type: 'module' }));
+    fs.writeFileSync(path.join(directory, 'attestation.pem'), 'stub-public-key');
+    fs.writeFileSync(path.join(directory, 'sdk.mjs'), `
+      export function connectAgent() { return Promise.resolve({}); }
+      export async function withAsguardApproval(_options, callback) { return callback({ attestation: { payload_hash: '${'a'.repeat(64)}' }, canonicalPayload: {}, decision: { intentId: 'intent-1' } }); }
+      export async function reportSubmission(options) { globalThis.__asguardReports.push(options); if (globalThis.__asguardReportFailure) throw new Error('report failed'); }
+    `);
+    const guardPath = path.join(directory, 'asguard.guard.mjs');
+    fs.writeFileSync(guardPath, buildGuardTemplate('js', 'relative', './sdk.mjs', 'esm'));
+    const guard = await import(`${pathToFileURL(guardPath).href}?v=${Date.now()}`) as {
+      guardedTransfer: (transfer: unknown, callback: (context: unknown) => Promise<unknown>, options?: { extractTxHash?: () => string | undefined; onReportError?: (error: unknown, hash: string | undefined) => void }) => Promise<unknown>;
+    };
+    Object.assign(process.env, {
+      ASGUARD_API_URL: 'http://localhost:8080', ASGUARD_RUNTIME_TOKEN: 'x'.repeat(32), ASGUARD_AGENT_ID: 'agent-one',
+      ASGUARD_AGENT_NAME: 'Agent One', ASGUARD_NETWORK: 'near:testnet', ASGUARD_ATTESTATION_PUBLIC_KEY_PATH: path.join(directory, 'attestation.pem'),
+    });
+    shared.__asguardReports = [];
+    const outcome = { transaction: { hash: '1'.repeat(43) } };
+    assert.equal(await guard.guardedTransfer({}, async () => outcome), outcome);
+    assert.deepEqual(shared.__asguardReports[0], {
+      baseUrl: 'http://localhost:8080', token: 'x'.repeat(32), intentId: 'intent-1', payloadHash: 'a'.repeat(64), txHash: outcome.transaction.hash,
+    });
+
+    let reportError: unknown;
+    const logs: unknown[][] = [];
+    console.error = (...values: unknown[]) => { logs.push(values); };
+    shared.__asguardReportFailure = true;
+    assert.equal(await guard.guardedTransfer({}, async () => outcome, { onReportError: (error, hash) => { reportError = { error, hash }; } }), outcome);
+    assert.equal((reportError as { hash: string }).hash, outcome.transaction.hash);
+    assert.equal(logs.length, 1);
+    assert.equal(String(logs[0][0]).includes(outcome.transaction.hash), true);
+
+    shared.__asguardReportFailure = false;
+    await guard.guardedTransfer({}, async () => outcome, { extractTxHash: () => { throw new Error('extract failed'); } });
+    const before = shared.__asguardReports.length;
+    await assert.rejects(guard.guardedTransfer({}, async () => { throw new Error('sign failed'); }));
+    assert.equal(shared.__asguardReports.length, before);
+  } finally {
+    console.error = originalError;
+    delete shared.__asguardReports;
+    delete shared.__asguardReportFailure;
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { nearAdapter, type NearNetwork } from './aos/nearAdapter';
+import { isAllowedApiEndpoint } from './endpointPolicy';
 
 export type WatchedNearNetwork = `near:${NearNetwork}`;
 
@@ -283,7 +284,7 @@ export class NearWalletWatcher {
     const networkName = network.slice(5) as NearNetwork;
     const endpoint = networkName === nearAdapter.network ? nearAdapter.rpcUrl : `https://rpc.${networkName}.near.org`;
     const url = new URL(endpoint);
-    if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw new Error('Wallet watch RPC must use HTTPS.');
+    if (!isAllowedApiEndpoint(url)) throw new Error('Wallet watch RPC must use HTTPS.');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
     try {

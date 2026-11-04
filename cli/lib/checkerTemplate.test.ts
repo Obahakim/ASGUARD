@@ -74,6 +74,19 @@ test('KEY-LITERAL output contains only rule location and never matched key mater
   }
 });
 
+test('one source line contributes only one finding per rule', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-dedupe-'));
+  try {
+    fs.writeFileSync(path.join(project, 'agent.ts'), 'KeyPair.fromString(process.env.ASGUARD_PRIVATE_KEY);\n');
+    const result = run(project, '--json', '--warn-only');
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout) as { findings: Array<{ rule: string; line: number }> };
+    assert.equal(report.findings.filter((finding) => finding.rule === 'KEY-LOAD' && finding.line === 1).length, 1);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('checker has expected exit codes, JSON shape, and no matched source text', () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-checker-exits-'));
   try {
