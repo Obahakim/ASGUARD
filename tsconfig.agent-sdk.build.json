@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.agent-sdk.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist/sdk",
+    "rootDir": ".",
+    "declaration": true
+  },
+  "include": ["agent-sdk/index.ts"]
+}

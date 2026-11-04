@@ -29,7 +29,7 @@ Usage: npm run connect -- [--project <dir>] [--yes ...] [--check [--json] [--war
   --warn-only            Return zero for findings with --check
   --dry-run              Print the plan; do not connect or write files
   --yes                  Non-interactive; requires all connection values above and ASGUARD_RUNTIME_TOKEN
-  --apply-guard          Apply the conservative sendMoney codemod (requires --yes)
+  --apply-guard          Apply the conservative sendMoney codemod (per-file confirmation interactively)
   --ci                   Add a GitHub Actions check workflow
   --sdk <mode>           SDK import mode: relative or package (default relative)
   --install-sdk          Permit building and installing the local SDK package
@@ -66,7 +66,6 @@ interface ProjectMetadata {
   typescript: boolean;
   esm: boolean;
   packageName: string;
-  hasSdkDependency: boolean;
 }
 interface SelectedTarget { path: string; overwrite: boolean }
 
@@ -93,7 +92,6 @@ function readProjectMetadata(project: string): ProjectMetadata {
       typescript: fs.existsSync(path.join(project, 'tsconfig.json')),
       esm: false,
       packageName: '',
-      hasSdkDependency: false,
     };
   }
   const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as {
@@ -108,7 +106,6 @@ function readProjectMetadata(project: string): ProjectMetadata {
     typescript: fs.existsSync(path.join(project, 'tsconfig.json')) || hasTypescript,
     esm: pkg.type === 'module',
     packageName: typeof pkg.name === 'string' ? pkg.name : '',
-    hasSdkDependency: Boolean(pkg.dependencies?.asguard || pkg.devDependencies?.asguard),
   };
 }
 
@@ -123,6 +120,60 @@ function validateLabel(value: string): string | undefined {
 
 function displayEndpoint(value: string): string {
   return new URL(value).origin;
+}
+
+function runNpm(args: string[], cwd: string) {
+  const npmCli = process.env.npm_execpath;
+  if (process.platform === 'win32' && npmCli) return spawnSync(process.execPath, [npmCli, ...args], { cwd, encoding: 'utf8', shell: false });
+  return spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { cwd, encoding: 'utf8', shell: false });
+}
+
+function detectPackageManager(project: string): 'npm' | 'pnpm' | 'yarn' {
+  if (fs.existsSync(path.join(project, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(project, 'yarn.lock'))) return 'yarn';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(project, 'package.json'), 'utf8')) as { packageManager?: unknown };
+    if (typeof pkg.packageManager === 'string' && pkg.packageManager.startsWith('pnpm@')) return 'pnpm';
+    if (typeof pkg.packageManager === 'string' && pkg.packageManager.startsWith('yarn@')) return 'yarn';
+  } catch { /* npm is the default when no package-manager marker is present */ }
+  return 'npm';
+}
+
+async function prepareSdkPackage(project: string, mode: SdkImportChoice, installRequested: boolean, yes: boolean, prompter?: Prompter): Promise<SdkImportChoice> {
+  if (mode !== 'package') return 'relative';
+  const installed = fs.existsSync(path.join(project, 'node_modules', 'asguard'));
+  if (installed) return 'package';
+  const repository = path.resolve(__dirname, '..');
+  const dist = path.join(repository, 'dist', 'sdk');
+  if (!fs.existsSync(dist)) {
+    const approvedBuild = installRequested || (!yes && prompter && await prompter.confirm('Run npm run build:sdk in this ASGUARD checkout?', false));
+    if (!approvedBuild) { summary.notes.push('SDK package build was not approved; using a relative SDK import.'); return 'relative'; }
+    const build = runNpm(['run', 'build:sdk'], repository);
+    if (build.status !== 0) { summary.notes.push('SDK build failed. Manual fallback: npm run build:sdk, npm pack --pack-destination <project>/asguard, then install the tarball in the agent project.'); return 'relative'; }
+  }
+  if (yes && !installRequested) { summary.notes.push('Under --yes, package installation requires --install-sdk; using a relative SDK import.'); return 'relative'; }
+  if (!yes && !installRequested && prompter && !await prompter.confirm('Pack and install the local ASGUARD SDK in this agent project?', false)) {
+    summary.notes.push('SDK installation was declined; using a relative SDK import.');
+    return 'relative';
+  }
+  const destination = path.join(project, 'asguard');
+  fs.mkdirSync(destination, { recursive: true });
+  const packed = runNpm(['pack', '--json', '--pack-destination', destination], repository);
+  if (packed.status !== 0) { summary.notes.push('SDK packing failed. Manual fallback: npm pack --pack-destination <project>/asguard, then install the tarball in the agent project.'); return 'relative'; }
+  let tarball = '';
+  try { tarball = (JSON.parse(packed.stdout) as Array<{ filename?: string }>)[0]?.filename || ''; } catch { tarball = ''; }
+  if (!tarball) { summary.notes.push('SDK packing produced no tarball. Manual fallback: npm pack --pack-destination <project>/asguard, then install the tarball in the agent project.'); return 'relative'; }
+  summary.files.written.push(`asguard/${tarball}`);
+  const manager = detectPackageManager(project);
+  const localPackage = `./asguard/${tarball}`;
+  if (manager === 'pnpm' || manager === 'yarn') {
+    setupFailure = true;
+    summary.notes.push(`Install the SDK with: ${manager === 'pnpm' ? 'pnpm add' : 'yarn add'} ${localPackage}`);
+    return 'package';
+  }
+  const install = runNpm(['install', '--save', localPackage], project);
+  if (install.status !== 0) { summary.notes.push(`SDK installation failed. Manual fallback: npm install --save ${localPackage}; using a relative SDK import for this run.`); return 'relative'; }
+  return 'package';
 }
 
 function validateAccounts(value: string): string | undefined {
@@ -187,8 +238,9 @@ function finishVerdict(project: string, connected: boolean, accountIds: string[]
   summary.accounts = accountIds;
   summary.scripts['asguard:check'] = noScripts ? 'skipped' : scriptStatus;
   const envPath = path.join(project, '.env.asguard');
-  const keyPath = path.join(project, 'asguard', 'attestation-public.pem');
-  const guardPath = path.join(project, metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js');
+  let keyPath = path.join(project, 'asguard', 'attestation-public.pem');
+  const writtenGuard = summary.files.written.find((file) => path.basename(file).startsWith('asguard.guard.'));
+  const guardPath = writtenGuard ? path.join(project, writtenGuard) : path.join(project, metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js');
   const checkerPath = path.join(project, 'asguard-check.mjs');
   let envValid = false;
   try {
@@ -199,11 +251,13 @@ function finishVerdict(project: string, connected: boolean, accountIds: string[]
       && Boolean(env.getValue('ASGUARD_AGENT_ID')?.trim()) && Boolean(env.getValue('ASGUARD_AGENT_NAME')?.trim())
       && Boolean(env.getValue('ASGUARD_NETWORK')?.trim()) && Boolean(env.getValue('ASGUARD_AGENT_ACCOUNT_IDS')?.trim())
       && Boolean(env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH')?.trim());
+    if (env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH')) keyPath = path.resolve(project, env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH') || '');
     validateEndpoint('ASGUARD base URL', endpoint);
   } catch { envValid = false; }
   let keyValid = false;
   try { publicFingerprint(fs.readFileSync(keyPath, 'utf8')); keyValid = true; } catch { keyValid = false; }
   let guardValid = fs.existsSync(guardPath);
+  const checkerValid = fs.existsSync(checkerPath);
   if (guardValid && !metadata.typescript) guardValid = spawnSync(process.execPath, ['--check', guardPath], { cwd: project, encoding: 'utf8', shell: false }).status === 0;
   if (guardValid && metadata.typescript) {
     try {
@@ -214,7 +268,7 @@ function finishVerdict(project: string, connected: boolean, accountIds: string[]
   const checklist = [
     ['Connection returned watched accounts', summary.connected], ['.env.asguard fields validate', envValid],
     ['Ed25519 public key is valid', keyValid], ['Guard module passes syntax check', guardValid],
-    ['asguard:check script is installed or skipped by request', noScripts || scriptStatus === 'installed'],
+    ['asguard:check and checker file are ready', checkerValid && (noScripts || scriptStatus === 'installed')],
     ['Embedded checker has no error findings', scanClean],
   ];
   const allComplete = checklist.every(([, done]) => done) && !setupFailure;
@@ -222,6 +276,7 @@ function finishVerdict(project: string, connected: boolean, accountIds: string[]
   if (!jsonConnectMode) {
     for (const [label, done] of checklist) console.log(`${done ? '✔' : '✘'} ${label}`);
     console.log(summary.verdict);
+    for (const note of summary.notes) if (!note.startsWith('No signing calls were detected.')) console.log(note);
     if (summary.remaining.length) for (const finding of summary.remaining) {
       console.log(`${finding.file}:${finding.line} ${finding.rule}`);
       console.log(finding.rule === 'SIGN-NEAR' ? '  guardedTransfer(transfer, async () => account.sendMoney(receiver, amount))'
@@ -420,16 +475,27 @@ async function installProjectExtras(
   if (options.noScripts) summary.scripts['asguard:check'] = 'skipped';
   else {
     try {
+      const packagePath = path.join(project, 'package.json');
+      const before = fs.existsSync(packagePath) ? fs.readFileSync(packagePath, 'utf8') : undefined;
       const status = installCheckScript(project);
       summary.scripts['asguard:check'] = status;
       if (status === 'conflict') summary.files.conflicts.push('package.json scripts.asguard:check');
-      else if (status === 'installed' && fs.existsSync(path.join(project, 'package.json'))) summary.files.written.push('package.json');
+      else if (status === 'installed' && fs.existsSync(packagePath)) {
+        if (before !== fs.readFileSync(packagePath, 'utf8')) summary.files.written.push('package.json');
+        else summary.files.skipped.push('package.json (unchanged)');
+      }
       else summary.files.skipped.push('package.json (missing)');
     } catch { setupFailure = true; summary.notes.push('Could not update package.json.'); }
   }
   try {
+    const ignorePath = path.join(project, '.gitignore');
+    const before = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, 'utf8') : undefined;
     if (updateProjectGitignore(project)) summary.files.written.push('.gitignore');
     else summary.files.skipped.push('.gitignore (not a git repository)');
+    if (before !== undefined && fs.existsSync(ignorePath) && before === fs.readFileSync(ignorePath, 'utf8')) {
+      summary.files.written = summary.files.written.filter((file) => file !== '.gitignore');
+      summary.files.skipped.push('.gitignore (unchanged)');
+    }
   } catch { setupFailure = true; summary.notes.push('Could not update .gitignore.'); }
 
   let addCi = options.ci;
@@ -487,12 +553,10 @@ async function interactiveConnect(
   const accounts = accountsValue.split(',').map((account) => account.trim());
 
   const key = await getPublicKey(baseUrl, prompter, project);
-  const packageInstalled = metadata.hasSdkDependency || fs.existsSync(path.join(project, 'node_modules', 'asguard'));
-  const sdkMode: SdkImportChoice = sdkPreference ?? (packageInstalled ? 'package' : 'relative');
+  const packageInstalled = fs.existsSync(path.join(project, 'node_modules', 'asguard'));
+  const requestedSdkMode: SdkImportChoice = sdkPreference ?? (packageInstalled ? 'package' : 'relative');
+  const sdkMode = await prepareSdkPackage(project, requestedSdkMode, flags.has('install-sdk'), false, prompter);
   if (sdkMode === 'relative') console.log('The relative SDK import is for development with tsx and is not suitable for production.');
-  else if (!metadata.hasSdkDependency && !fs.existsSync(path.join(project, 'node_modules', 'asguard'))) {
-    console.log('asguard/agent-sdk is not installed here. Part C is not available; use the relative SDK import or install a built package later.');
-  }
 
   console.log(`\nThis registers ${accounts.length} read-only watches on ${displayEndpoint(baseUrl)} for agent ${agentId}. Continue? [Y/n]`);
   if (!await prompter.confirm('Continue?', true)) return 0;
@@ -512,7 +576,7 @@ async function interactiveConnect(
     const message = safeError(error);
     if (error instanceof AsguardApprovalError && /401|invalid.*token|unauthorized/i.test(message)) console.error('ASGUARD rejected the token (401): verify that it is the runtime token.');
     else if (error instanceof AsguardApprovalError && /403|insufficient role|forbidden/i.test(message)) console.error('ASGUARD denied the connection (403): the credential lacks the required runtime role.');
-    else if (error instanceof AsguardApprovalError && /4\d\d/.test(message)) console.error(`ASGUARD rejected the request: ${message}`);
+    else if (error instanceof AsguardApprovalError && /4\d\d/.test(message)) console.error('ASGUARD rejected the request.');
     else console.error('Could not connect to ASGUARD; check reachability and server logs.');
     return 1;
   }
@@ -525,7 +589,7 @@ async function interactiveConnect(
   files.push(await chooseTarget(project, path.join('asguard', 'attestation-public.pem'), prompter));
   files.push(await chooseTarget(project, metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', prompter));
   files.push(await chooseTarget(project, 'asguard-check.mjs', prompter));
-  const written = writeGeneratedFiles(project, metadata, sdkMode === 'package' && packageInstalled ? 'package' : 'relative', { baseUrl, token, agentId, agentName, network, accounts, keyPem: key }, files);
+  const written = writeGeneratedFiles(project, metadata, sdkMode, { baseUrl, token, agentId, agentName, network, accounts, keyPem: key }, files);
   summary.files.written.push(...written.map((file) => path.relative(project, file).split(path.sep).join('/')));
   summary.files.skipped.push(...files.flatMap((target, index) => target ? [] : [path.basename(['.env.asguard', 'asguard/attestation-public.pem', metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', 'asguard-check.mjs'][index]) ]));
   await installProjectExtras(project, prompter, { noScripts: flags.has('no-scripts'), ci: flags.has('ci'), yes: false });
@@ -643,7 +707,7 @@ async function run(): Promise<number> {
           ? 'ASGUARD rejected the token (401).'
           : error instanceof AsguardApprovalError && /403|insufficient role|forbidden/i.test(message)
             ? 'ASGUARD denied the connection (403).'
-            : error instanceof AsguardApprovalError ? `ASGUARD rejected the connection: ${message}` : 'Could not connect to ASGUARD.');
+        : error instanceof AsguardApprovalError ? 'ASGUARD rejected the connection.' : 'Could not connect to ASGUARD.');
         return 1;
       }
     }
@@ -657,14 +721,13 @@ async function run(): Promise<number> {
       if (!jsonConnectMode) console.log('Dry run plan: register the declared accounts; fetch and verify the public key; write generated files; install asguard:check; update .gitignore; optionally write CI and apply the sendMoney codemod. No connect POST or file write was made.');
       return reportScan(project);
     }
-    const packageInstalled = metadata.hasSdkDependency || fs.existsSync(path.join(project, 'node_modules', 'asguard'));
-    const sdkMode: SdkImportChoice = (args.values.get('sdk') as SdkImportChoice | undefined) ?? (packageInstalled ? 'package' : 'relative');
-    if (sdkMode === 'package' && !packageInstalled) {
-      summary.notes.push('asguard/agent-sdk is not installed; using the relative SDK import.');
-    }
+    const packageInstalled = fs.existsSync(path.join(project, 'node_modules', 'asguard'));
+    const requestedSdkMode: SdkImportChoice = (args.values.get('sdk') as SdkImportChoice | undefined)
+      ?? (packageInstalled || args.flags.has('install-sdk') ? 'package' : 'relative');
+    const sdkMode = await prepareSdkPackage(project, requestedSdkMode, args.flags.has('install-sdk'), true);
     if (sdkMode === 'relative' && !jsonConnectMode) console.log('Using a development-only relative SDK import; this is not suitable for production.');
     const expectedFiles = ['.env.asguard', 'asguard/attestation-public.pem', metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', 'asguard-check.mjs'];
-    const files = writeGeneratedFiles(project, metadata, sdkMode === 'package' && packageInstalled ? 'package' : 'relative', {
+    const files = writeGeneratedFiles(project, metadata, sdkMode, {
       baseUrl, token, agentId, agentName, network, accounts, keyPem: key.pem,
     }, undefined, args.flags.has('force'));
     summary.files.written.push(...files.map((file) => path.relative(project, file).split(path.sep).join('/')));

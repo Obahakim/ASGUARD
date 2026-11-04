@@ -65,7 +65,9 @@ test('--patch writes an applicable diff without modifying source; dirty files ar
     assert.equal(spawnSync('git', ['apply', '--check', patchPath], { cwd: project, shell: false }).status, 0);
     const changed = await applySendMoneyGuard({ project, guardPath: guard, yes: true, apply: true, forceNoGit: false });
     assert.equal(changed.applied.length, 1);
-    assert.equal(fs.readFileSync(path.join(project, '.asguard-backup', String(Math.floor(Date.now() / 1000)), 'agent.ts'), 'utf8'), original);
+    const backupDirectories = fs.readdirSync(path.join(project, '.asguard-backup'));
+    assert.equal(backupDirectories.length, 1);
+    assert.equal(fs.readFileSync(path.join(project, '.asguard-backup', backupDirectories[0], 'agent.ts'), 'utf8'), original);
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
 });
 

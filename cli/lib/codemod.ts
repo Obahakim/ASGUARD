@@ -102,9 +102,9 @@ function moduleKind(project: string): { esm: boolean; nodeNext: boolean } {
     const configPath = path.join(project, 'tsconfig.json');
     if (fs.existsSync(configPath)) {
       const parsed = ts.parseConfigFileTextToJson(configPath, fs.readFileSync(configPath, 'utf8')).config as { compilerOptions?: { module?: unknown; moduleResolution?: unknown } };
-      const module = String(parsed.compilerOptions?.module || '').toLowerCase();
+      const moduleName = String(parsed.compilerOptions?.module || '').toLowerCase();
       const resolution = String(parsed.compilerOptions?.moduleResolution || '').toLowerCase();
-      nodeNext = module.includes('node16') || module.includes('nodenext') || resolution.includes('node16') || resolution.includes('nodenext');
+      nodeNext = moduleName.includes('node16') || moduleName.includes('nodenext') || resolution.includes('node16') || resolution.includes('nodenext');
     }
   } catch { /* malformed project config leaves the default extension behavior */ }
   return { esm, nodeNext };

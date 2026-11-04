@@ -2,10 +2,13 @@
   "name": "asguard",
   "version": "0.1.0",
   "private": true,
+  "files": [
+    "dist/sdk"
+  ],
   "exports": {
     "./agent-sdk": {
-      "types": "./agent-sdk/index.ts",
-      "import": "./agent-sdk/index.ts"
+      "types": "./dist/sdk/agent-sdk/index.d.ts",
+      "default": "./dist/sdk/agent-sdk/index.js"
     }
   },
   "scripts": {
@@ -15,6 +18,7 @@
     "build": "npm run build:server && npm run build:agent-sdk && npm run build:cli && npm run build:frontend:types && next build",
     "build:server": "tsc --noEmit -p tsconfig.server.json",
     "build:agent-sdk": "tsc --noEmit -p tsconfig.agent-sdk.json",
+    "build:sdk": "tsc -p tsconfig.agent-sdk.build.json",
     "build:cli": "tsc --noEmit -p tsconfig.cli.json",
     "build:frontend:types": "tsc --noEmit -p tsconfig.frontend.json",
     "test": "node scripts/test.mjs",
