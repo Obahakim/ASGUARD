@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const VERSION = '1.0.0';
-const ignored = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.asguard', 'vendor']);
+const ignored = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.asguard', '.asguard-backup', 'vendor']);
 const extensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const rules = [
   { id: 'SIGN-NEAR', severity: 'error', expressions: [/\.sendMoney\s*\(/g, /\.signAndSendTransaction\s*\(/g, /\.functionCall\s*\(/g, /\.addKey\s*\(/g, /\.deleteKey\s*\(/g, /\.deployContract\s*\(/g, /\.signTransaction\s*\(/g], message: 'Direct NEAR signing call', suggestion: 'guardedTransfer(...)' },
