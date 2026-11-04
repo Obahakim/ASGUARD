@@ -11,10 +11,12 @@ import { buildGuardTemplate, type SdkImportChoice } from './lib/guardTemplates';
 import { CHECKER_SOURCE } from './lib/checkerTemplate';
 import { probeReachability } from './lib/probe';
 import { validateEndpoint } from './lib/validate';
+import { installCheckScript, updateProjectGitignore, writeCiWorkflow } from './lib/projectSetup';
+import * as ts from 'typescript';
 
 const HELP = `Connect an agent project to a running ASGUARD.
 
-Usage: npm run connect -- [--project <dir>] [--check [--json] [--warn-only]] [--dry-run]
+Usage: npm run connect -- [--project <dir>] [--yes ...] [--check [--json] [--warn-only]] [--dry-run]
   --url <url>            ASGUARD base URL (non-interactive mode)
   --agent-id <id>        Agent ID
   --agent-name <name>    Agent display name
@@ -22,10 +24,18 @@ Usage: npm run connect -- [--project <dir>] [--check [--json] [--warn-only]] [--
   --accounts <a,b,...>   Comma-separated public NEAR account IDs
   --project <dir>        Agent project directory (default cwd)
   --check                Scan only; this is pattern matching, not proof of safety
-  --json                 JSON output with --check
+  --json                 JSON summary with --yes; scanner JSON with --check
   --warn-only            Return zero for findings with --check
   --dry-run              Print the plan; do not connect or write files
   --yes                  Non-interactive; requires all connection values above and ASGUARD_RUNTIME_TOKEN
+  --apply-guard          Apply the conservative sendMoney codemod (requires --yes)
+  --ci                   Add a GitHub Actions check workflow
+  --sdk <mode>           SDK import mode: relative or package (default relative)
+  --install-sdk          Permit building and installing the local SDK package
+  --no-scripts           Skip adding the asguard:check package script
+  --force                Overwrite existing generated files
+  --force-no-git         Allow codemod without git; a backup is still required
+  --patch <file>         Write a codemod patch without editing source files
   --no-color             Disable ANSI color
   --help                 Show this help
 
@@ -37,6 +47,18 @@ const agentAccountPattern = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
 const allowedNames = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.asguard', 'vendor',
 ]);
+let jsonConnectMode = false;
+let setupFailure = false;
+const summary = {
+  verdict: 'NEEDS ATTENTION', connected: false, accounts: [] as string[],
+  files: { written: [] as string[], skipped: [] as string[], conflicts: [] as string[] },
+  scripts: { 'asguard:check': 'skipped' as 'installed' | 'conflict' | 'skipped' },
+  applied: [] as Array<{ file: string; line: number }>,
+  remaining: [] as Array<{ file: string; line: number; rule: string }>,
+  keyExposures: 0, notes: [] as string[],
+};
+const originalConsoleLog = console.log.bind(console);
+console.log = (...values: unknown[]) => { if (!jsonConnectMode) originalConsoleLog(...values); };
 
 interface ProjectMetadata {
   hasPackageJson: boolean;
@@ -119,7 +141,7 @@ function isSelfProject(project: string): boolean {
   }
 }
 
-function runChecker(project: string, json = false, warnOnly = false): { status: number; stdout: string; stderr: string; summary?: { findings: Array<{ rule: string }>; summary: { key_exposures: number } } } {
+function runChecker(project: string, json = false, warnOnly = false): { status: number; stdout: string; stderr: string; summary?: { findings: Array<{ rule: string; file?: string; line?: number; severity?: string }>; summary: { key_exposures: number } } } {
   const args = ['--input-type=module', '-e', CHECKER_SOURCE, '--', '--project', project];
   if (json) args.push('--json');
   if (warnOnly) args.push('--warn-only');
@@ -131,6 +153,16 @@ function runChecker(project: string, json = false, warnOnly = false): { status: 
 }
 
 function reportScan(project: string): number {
+  if (jsonConnectMode) {
+    const scan = runChecker(project, true, true);
+    if (scan.summary) {
+      summary.remaining = scan.summary.findings.map((finding) => ({
+        file: (finding as { file?: string }).file || '', line: (finding as { line?: number }).line || 0, rule: finding.rule,
+      }));
+      summary.keyExposures = scan.summary.summary.key_exposures;
+    }
+    return scan.status === 2 ? 2 : 0;
+  }
   const result = runChecker(project);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
@@ -141,6 +173,65 @@ function reportScan(project: string): number {
     console.log('A key reachable from the agent process defeats the gate. Move it into the guarded callback\'s own environment.');
   }
   return result.status;
+}
+
+function finishVerdict(project: string, connected: boolean, accountIds: string[], metadata: ProjectMetadata, scriptStatus: 'installed' | 'conflict' | 'skipped', noScripts: boolean): number {
+  const scan = runChecker(project, true, true);
+  const findings = scan.summary?.findings ?? [];
+  summary.remaining = findings.map((finding) => ({
+    file: (finding as { file?: string }).file || '', line: (finding as { line?: number }).line || 0, rule: finding.rule,
+  }));
+  summary.keyExposures = scan.summary?.summary.key_exposures ?? 0;
+  summary.connected = connected && accountIds.length > 0;
+  summary.accounts = accountIds;
+  summary.scripts['asguard:check'] = noScripts ? 'skipped' : scriptStatus;
+  const envPath = path.join(project, '.env.asguard');
+  const keyPath = path.join(project, 'asguard', 'attestation-public.pem');
+  const guardPath = path.join(project, metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js');
+  const checkerPath = path.join(project, 'asguard-check.mjs');
+  let envValid = false;
+  try {
+    const env = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    const token = env.getValue('ASGUARD_RUNTIME_TOKEN') || '';
+    const endpoint = env.getValue('ASGUARD_API_URL') || '';
+    envValid = Buffer.byteLength(token, 'utf8') >= 32
+      && Boolean(env.getValue('ASGUARD_AGENT_ID')?.trim()) && Boolean(env.getValue('ASGUARD_AGENT_NAME')?.trim())
+      && Boolean(env.getValue('ASGUARD_NETWORK')?.trim()) && Boolean(env.getValue('ASGUARD_AGENT_ACCOUNT_IDS')?.trim())
+      && Boolean(env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH')?.trim());
+    validateEndpoint('ASGUARD base URL', endpoint);
+  } catch { envValid = false; }
+  let keyValid = false;
+  try { publicFingerprint(fs.readFileSync(keyPath, 'utf8')); keyValid = true; } catch { keyValid = false; }
+  let guardValid = fs.existsSync(guardPath);
+  if (guardValid && !metadata.typescript) guardValid = spawnSync(process.execPath, ['--check', guardPath], { cwd: project, encoding: 'utf8', shell: false }).status === 0;
+  if (guardValid && metadata.typescript) {
+    try {
+      guardValid = !ts.transpileModule(fs.readFileSync(guardPath, 'utf8'), { reportDiagnostics: true, compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext } }).diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+    } catch { guardValid = false; }
+  }
+  const scanClean = scan.status === 0 && findings.every((finding) => finding.severity !== 'error');
+  const checklist = [
+    ['Connection returned watched accounts', summary.connected], ['.env.asguard fields validate', envValid],
+    ['Ed25519 public key is valid', keyValid], ['Guard module passes syntax check', guardValid],
+    ['asguard:check script is installed or skipped by request', noScripts || scriptStatus === 'installed'],
+    ['Embedded checker has no error findings', scanClean],
+  ];
+  const allComplete = checklist.every(([, done]) => done) && !setupFailure;
+  summary.verdict = allComplete ? 'GUARDED' : !setupFailure && summary.connected && envValid && keyValid && guardValid ? 'CONNECTED' : 'NEEDS ATTENTION';
+  if (!jsonConnectMode) {
+    for (const [label, done] of checklist) console.log(`${done ? '✔' : '✘'} ${label}`);
+    console.log(summary.verdict);
+    if (summary.remaining.length) for (const finding of summary.remaining) {
+      console.log(`${finding.file}:${finding.line} ${finding.rule}`);
+      console.log(finding.rule === 'SIGN-NEAR' ? '  guardedTransfer(transfer, async () => account.sendMoney(receiver, amount))'
+        : finding.rule.startsWith('KEY-') ? '  Move the key into the guarded callback\'s own environment.'
+          : '  See agent-sdk/README.md for the guarded signing pattern.');
+    }
+    if (findings.length === 0) console.log('No signing calls were detected. If your agent signs through other means, review it manually.');
+    console.log('GUARDED means no unguarded signing was detected by pattern matching. It is not proof. ASGUARD\'s wallet watch is your runtime backstop.');
+  }
+  if (findings.length === 0) summary.notes.push('No signing calls were detected. If your agent signs through other means, review it manually.');
+  return allComplete ? 0 : 1;
 }
 
 function findOtherLanguageFiles(project: string): string[] {
@@ -231,20 +322,14 @@ function writeTarget(filePath: string | undefined, contents: string, mode: numbe
   if (process.platform !== 'win32') fs.chmodSync(filePath, mode);
 }
 
-function targetPaths(project: string, typescript: boolean, overwrite: boolean): string[] {
+function targetPaths(project: string, typescript: boolean, overwrite: boolean): Array<SelectedTarget | undefined> {
   const names = ['.env.asguard', path.join('asguard', 'attestation-public.pem'),
     typescript ? 'asguard.guard.ts' : 'asguard.guard.js', 'asguard-check.mjs'];
   return names.map((name) => {
     const target = path.join(project, name);
-    if (!fs.existsSync(target)) return target;
-    if (overwrite) return target;
-    let candidate = `${target}.new`;
-    let suffix = 1;
-    while (fs.existsSync(candidate)) {
-      candidate = `${target}.new.${suffix}`;
-      suffix += 1;
-    }
-    return candidate;
+    if (!fs.existsSync(target)) return { path: target, overwrite: false };
+    if (overwrite) return { path: target, overwrite: true };
+    return undefined;
   });
 }
 
@@ -274,8 +359,9 @@ function writeGeneratedFiles(
   sdkMode: SdkImportChoice,
   values: { baseUrl: string; token: string; agentId: string; agentName: string; network: string; accounts: string[]; keyPem: string },
   selections?: Array<SelectedTarget | undefined>,
+  force = false,
 ): string[] {
-  const files = selections ?? targetPaths(project, metadata.typescript, false).map((filePath) => ({ path: filePath, overwrite: false }));
+  const files = selections ?? targetPaths(project, metadata.typescript, force);
   const sdkRelative = `.${path.sep}${path.relative(project, path.resolve(__dirname, '..', '..', 'agent-sdk', 'index')).split(path.sep).join('/')}`;
   const expectedPublicPath = path.join(project, 'asguard', 'attestation-public.pem');
   const actualPublicPath = files[1]?.path || expectedPublicPath;
@@ -307,11 +393,50 @@ function writeGeneratedFiles(
   return files.flatMap((target) => target ? [target.path] : []);
 }
 
+async function installProjectExtras(
+  project: string,
+  prompter: Prompter | undefined,
+  options: { noScripts: boolean; ci: boolean; yes: boolean },
+): Promise<void> {
+  if (options.noScripts) summary.scripts['asguard:check'] = 'skipped';
+  else {
+    try {
+      const status = installCheckScript(project);
+      summary.scripts['asguard:check'] = status;
+      if (status === 'conflict') summary.files.conflicts.push('package.json scripts.asguard:check');
+      else if (status === 'installed' && fs.existsSync(path.join(project, 'package.json'))) summary.files.written.push('package.json');
+      else summary.files.skipped.push('package.json (missing)');
+    } catch { setupFailure = true; summary.notes.push('Could not update package.json.'); }
+  }
+  try {
+    if (updateProjectGitignore(project)) summary.files.written.push('.gitignore');
+    else summary.files.skipped.push('.gitignore (not a git repository)');
+  } catch { setupFailure = true; summary.notes.push('Could not update .gitignore.'); }
+
+  let addCi = options.ci;
+  if (!options.yes && !options.ci && prompter) {
+    const workflows = path.join(project, '.github', 'workflows');
+    addCi = await prompter.confirm('Add a GitHub Actions workflow that runs the check?', fs.existsSync(workflows));
+  }
+  if (addCi) {
+    try {
+      const existing = path.join(project, '.github', 'workflows', 'asguard-check.yml');
+      let useNew = options.yes;
+      if (!useNew && prompter && fs.existsSync(existing)) useNew = await prompter.confirm('Workflow already exists. Write asguard-check.yml.new?', false);
+      const workflow = writeCiWorkflow(project, useNew);
+      if (workflow) summary.files.written.push(path.relative(project, workflow).split(path.sep).join('/'));
+      else if (fs.existsSync(existing)) summary.files.conflicts.push('.github/workflows/asguard-check.yml');
+    } catch { setupFailure = true; summary.notes.push('Could not write CI workflow.'); }
+  }
+}
+
 async function interactiveConnect(
   project: string,
   metadata: ProjectMetadata,
   dryRun: boolean,
   noColor: boolean,
+  flags: Set<string>,
+  sdkPreference?: SdkImportChoice,
 ): Promise<number> {
   const prompter = createPrompter({ input: process.stdin, output: process.stdout, isTTY: Boolean(process.stdin.isTTY), noColor });
   const enteredBaseUrl = await prompter.askSecret('ASGUARD base URL (press Enter for http://localhost:8080)', {
@@ -342,8 +467,8 @@ async function interactiveConnect(
   const accounts = accountsValue.split(',').map((account) => account.trim());
 
   const key = await getPublicKey(baseUrl, prompter, project);
-  const sdkChoice = await prompter.choose('SDK import style:', ['relative path to this ASGUARD checkout (development only)', 'asguard/agent-sdk package (requires Part C)']);
-  const sdkMode: SdkImportChoice = sdkChoice.startsWith('relative') ? 'relative' : 'package';
+  const packageInstalled = metadata.hasSdkDependency || fs.existsSync(path.join(project, 'node_modules', 'asguard'));
+  const sdkMode: SdkImportChoice = sdkPreference ?? (packageInstalled ? 'package' : 'relative');
   if (sdkMode === 'relative') console.log('The relative SDK import is for development with tsx and is not suitable for production.');
   else if (!metadata.hasSdkDependency && !fs.existsSync(path.join(project, 'node_modules', 'asguard'))) {
     console.log('asguard/agent-sdk is not installed here. Part C is not available; use the relative SDK import or install a built package later.');
@@ -352,7 +477,7 @@ async function interactiveConnect(
   console.log(`\nThis registers ${accounts.length} read-only watches on ${displayEndpoint(baseUrl)} for agent ${agentId}. Continue? [Y/n]`);
   if (!await prompter.confirm('Continue?', true)) return 0;
   if (dryRun) {
-    console.log('Dry run: would connect, save .env.asguard and the public key, and generate the guard and checker. No network write or file write was made.');
+    console.log('Dry run plan: connect to ASGUARD; fetch and verify the Ed25519 key; write .env.asguard, public key, guard, and checker; update package.json and .gitignore; optionally write CI and apply the conservative sendMoney codemod. No network write or file write was made.');
     return reportScan(project);
   }
 
@@ -380,14 +505,13 @@ async function interactiveConnect(
   files.push(await chooseTarget(project, path.join('asguard', 'attestation-public.pem'), prompter));
   files.push(await chooseTarget(project, metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', prompter));
   files.push(await chooseTarget(project, 'asguard-check.mjs', prompter));
-  writeGeneratedFiles(project, metadata, sdkMode, { baseUrl, token, agentId, agentName, network, accounts, keyPem: key }, files);
-  const ignorePath = path.join(project, '.gitignore');
-  if (fs.existsSync(path.join(project, '.git')) && !fs.readFileSync(ignorePath, 'utf8').split(/\r?\n/).includes('.env.asguard')) {
-    if (await prompter.confirm('Offer .env.asguard to be added to .gitignore?', true)) {
-      console.log('Add this line to the project .gitignore: .env.asguard');
-    }
-  }
-  const scanStatus = reportScan(project);
+  const written = writeGeneratedFiles(project, metadata, sdkMode === 'package' && packageInstalled ? 'package' : 'relative', { baseUrl, token, agentId, agentName, network, accounts, keyPem: key }, files);
+  summary.files.written.push(...written.map((file) => path.relative(project, file).split(path.sep).join('/')));
+  summary.files.skipped.push(...files.flatMap((target, index) => target ? [] : [path.basename(['.env.asguard', 'asguard/attestation-public.pem', metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', 'asguard-check.mjs'][index]) ]));
+  await installProjectExtras(project, prompter, { noScripts: flags.has('no-scripts'), ci: flags.has('ci'), yes: false });
+  summary.connected = true;
+  summary.accounts = registered.flatMap((account) => typeof account === 'string' ? [account] : account && typeof account === 'object' && typeof (account as Record<string, unknown>).account_id === 'string' ? [(account as Record<string, unknown>).account_id as string] : []);
+  const scriptStatus = summary.scripts['asguard:check'];
   for (const file of files.flatMap((target) => target ? [target.path] : [])) {
     console.log(`Wrote ${path.relative(project, file).split(path.sep).join('/')}`);
   }
@@ -395,7 +519,7 @@ async function interactiveConnect(
   console.log('Next steps: run node --env-file=.env.asguard <entry>, then call guardedTransfer(...) around the signing callback.');
   console.log('Add asguard:check to CI. Move private keys out of the agent process and into the guarded callback.');
   console.log('connectAgent registers watches only; accounts are agent-declared and the scan is pattern matching, not proof.');
-  return scanStatus;
+  return finishVerdict(project, true, summary.accounts, metadata, scriptStatus, flags.has('no-scripts'));
 }
 
 async function run(): Promise<number> {
@@ -403,12 +527,15 @@ async function run(): Promise<number> {
   let args;
   try {
     args = parseArgs(process.argv.slice(2),
-      ['project', 'url', 'agent-id', 'agent-name', 'network', 'accounts'],
-      ['check', 'json', 'warn-only', 'dry-run', 'yes', 'no-color', 'help', 'allow-self']);
+      ['project', 'url', 'agent-id', 'agent-name', 'network', 'accounts', 'sdk', 'patch'],
+      ['check', 'json', 'warn-only', 'dry-run', 'yes', 'no-color', 'help', 'allow-self', 'apply-guard', 'ci', 'install-sdk', 'no-scripts', 'force', 'force-no-git']);
     if (args.positionals.length) throw new Error(`Unexpected argument: ${args.positionals[0]}`);
-    if (args.flags.has('json') && !args.flags.has('check')) throw new Error('--json is only valid with --check.');
+    if (args.flags.has('json') && !args.flags.has('check') && !args.flags.has('yes')) throw new Error('--json requires --check or --yes.');
     if (args.flags.has('warn-only') && !args.flags.has('check')) throw new Error('--warn-only is only valid with --check.');
     if (args.flags.has('check') && args.flags.has('dry-run')) throw new Error('--check and --dry-run cannot be combined.');
+    if (args.flags.has('apply-guard') && !args.flags.has('yes')) throw new Error('--apply-guard requires --yes.');
+    if (args.values.has('sdk') && !['relative', 'package'].includes(args.values.get('sdk') || '')) throw new Error('--sdk must be relative or package.');
+    jsonConnectMode = args.flags.has('json') && args.flags.has('yes') && !args.flags.has('check');
   } catch (error) {
     console.error(`${safeError(error)}\n${usage}`);
     return 2;
@@ -505,15 +632,27 @@ async function run(): Promise<number> {
       printAccounts(registered);
     } else console.log(`Dry run: would register ${accounts.length} read-only watches on ${displayEndpoint(baseUrl)} for ${agentId}.`);
     console.log('Account IDs are agent-declared and not yet proven.');
-    if (args.flags.has('dry-run')) return reportScan(project);
+    if (args.flags.has('dry-run')) {
+      if (!jsonConnectMode) console.log('Dry run plan: register the declared accounts; fetch and verify the public key; write generated files; install asguard:check; update .gitignore; optionally write CI and apply the sendMoney codemod. No connect POST or file write was made.');
+      return reportScan(project);
+    }
     const packageInstalled = metadata.hasSdkDependency || fs.existsSync(path.join(project, 'node_modules', 'asguard'));
-    if (packageInstalled) console.log('Using the asguard/agent-sdk package import.');
-    else console.log('Using a development-only relative SDK import; this is not suitable for production.');
-    const files = writeGeneratedFiles(project, metadata, packageInstalled ? 'package' : 'relative', {
+    const sdkMode: SdkImportChoice = (args.values.get('sdk') as SdkImportChoice | undefined) ?? (packageInstalled ? 'package' : 'relative');
+    if (sdkMode === 'package' && !packageInstalled) {
+      summary.notes.push('asguard/agent-sdk is not installed; using the relative SDK import.');
+    }
+    if (sdkMode === 'relative' && !jsonConnectMode) console.log('Using a development-only relative SDK import; this is not suitable for production.');
+    const expectedFiles = ['.env.asguard', 'asguard/attestation-public.pem', metadata.typescript ? 'asguard.guard.ts' : 'asguard.guard.js', 'asguard-check.mjs'];
+    const files = writeGeneratedFiles(project, metadata, sdkMode === 'package' && packageInstalled ? 'package' : 'relative', {
       baseUrl, token, agentId, agentName, network, accounts, keyPem: key.pem,
-    });
+    }, undefined, args.flags.has('force'));
+    summary.files.written.push(...files.map((file) => path.relative(project, file).split(path.sep).join('/')));
+    for (const file of expectedFiles) if (!files.some((written) => path.relative(project, written).split(path.sep).join('/') === file)) summary.files.skipped.push(file);
+    await installProjectExtras(project, undefined, { noScripts: args.flags.has('no-scripts'), ci: args.flags.has('ci'), yes: true });
+    summary.connected = true;
+    summary.accounts = response && Array.isArray(response.accounts) ? response.accounts.flatMap((account) => typeof account === 'string' ? [account] : account && typeof account === 'object' && typeof (account as Record<string, unknown>).account_id === 'string' ? [(account as Record<string, unknown>).account_id as string] : []) : [];
     for (const file of files) console.log(`Wrote ${path.relative(project, file).split(path.sep).join('/')}`);
-    const scanStatus = reportScan(project);
+    const scanStatus = finishVerdict(project, true, summary.accounts, metadata, summary.scripts['asguard:check'], args.flags.has('no-scripts'));
     console.log('Suggested package.json script: "asguard:check": "node asguard-check.mjs"');
     console.log('Next steps: run node --env-file=.env.asguard <entry>, then call guardedTransfer(...) around the signing callback.');
     console.log('Add asguard:check to CI. Move private keys out of the agent process and into the guarded callback.');
@@ -521,7 +660,7 @@ async function run(): Promise<number> {
     return scanStatus;
   }
   try {
-    return await interactiveConnect(project, metadata, args.flags.has('dry-run'), args.flags.has('no-color'));
+    return await interactiveConnect(project, metadata, args.flags.has('dry-run'), args.flags.has('no-color'), args.flags, args.values.get('sdk') as SdkImportChoice | undefined);
   } catch (error) {
     const code = error && typeof error === 'object' && 'exitCode' in error ? Number(error.exitCode) : 1;
     if (code !== 130) console.error(`Connect failed: ${safeError(error)}`);
@@ -529,7 +668,10 @@ async function run(): Promise<number> {
   }
 }
 
-void run().then((code) => { process.exitCode = code; }).catch((error: unknown) => {
+void run().then((code) => {
+  if (jsonConnectMode) process.stdout.write(JSON.stringify(summary) + '\n');
+  process.exitCode = code;
+}).catch((error: unknown) => {
   console.error(`Connect failed: ${safeError(error)}`);
   process.exitCode = 1;
 });

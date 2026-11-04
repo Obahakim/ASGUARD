@@ -127,6 +127,66 @@ test('connect handles 401 and 403; dry-run does not POST or write files', async 
   assert.equal(fs.readdirSync(project).length, 0);
 });
 
+test('--yes --json connects without prompts and is idempotent', async (context) => {
+  const pair = generateKeyPairSync('ed25519');
+  const publicPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const stub = await listen((req, res) => {
+    if (req.url === '/api/attestation/public-key') { responsePublicKey(res, publicPem); return; }
+    if (req.url === '/api/agents/connect') {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, agent_id: 'test-agent', accounts: [{ account_id: 'alice.testnet', network: 'near:testnet', id: 'watch-1' }] }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  context.after(() => new Promise<void>((resolve) => stub.server.close(() => resolve())));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-connect-json-'));
+  context.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(project, 'package.json'), '{\n  "name": "json-agent",\n  "devDependencies": { "typescript": "^5" }\n}\n');
+
+  const first = await runConnect(project, stub.baseUrl, runtimeToken, ['--json']);
+  assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+  const report = JSON.parse(first.stdout) as { verdict: string; connected: boolean; accounts: string[]; scripts: Record<string, string>; files: { written: string[]; skipped: string[]; conflicts: string[] }; keyExposures: number };
+  assert.equal(report.verdict, 'GUARDED');
+  assert.equal(report.connected, true);
+  assert.deepEqual(report.accounts, ['alice.testnet']);
+  assert.equal(report.scripts['asguard:check'], 'installed');
+  assert.equal(report.keyExposures, 0);
+  assert.equal(first.stdout.includes(runtimeToken), false);
+  const before = ['package.json', '.env.asguard', 'asguard.guard.ts', 'asguard-check.mjs', 'asguard/attestation-public.pem']
+    .map((name) => [name, fs.readFileSync(path.join(project, name))] as const);
+  const second = await runConnect(project, stub.baseUrl, runtimeToken, ['--json']);
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  assert.deepEqual(['package.json', '.env.asguard', 'asguard.guard.ts', 'asguard-check.mjs', 'asguard/attestation-public.pem']
+    .map((name) => [name, fs.readFileSync(path.join(project, name))] as const), before);
+});
+
+test('--yes readiness reports CONNECTED for remaining signing calls and writes CI only when requested', async (context) => {
+  const pair = generateKeyPairSync('ed25519');
+  const publicPem = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const stub = await listen((req, res) => {
+    if (req.url === '/api/attestation/public-key') { responsePublicKey(res, publicPem); return; }
+    if (req.url === '/api/agents/connect') {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, agent_id: 'test-agent', accounts: ['alice.testnet'] }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  context.after(() => new Promise<void>((resolve) => stub.server.close(() => resolve())));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-connect-connected-'));
+  context.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(project, 'package.json'), '{"name":"connected-agent","devDependencies":{"typescript":"^5"}}\n');
+  fs.writeFileSync(path.join(project, 'agent.js'), 'wallet.sendMoney(1);\n');
+  const result = await runConnect(project, stub.baseUrl, runtimeToken, ['--json', '--ci']);
+  assert.equal(result.status, 1);
+  const report = JSON.parse(result.stdout) as { verdict: string; remaining: Array<{ rule: string }>; files: { written: string[] } };
+  assert.equal(report.verdict, 'CONNECTED');
+  assert.equal(report.remaining[0]?.rule, 'SIGN-NEAR');
+  assert.equal(report.files.written.includes('.github/workflows/asguard-check.yml'), true);
+  assert.equal(fs.existsSync(path.join(project, '.github', 'workflows', 'asguard-check.yml')), true);
+});
+
 test('connect check emits JSON, returns findings, and refuses the ASGUARD repository itself', () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-connect-scan-'));
   try {
