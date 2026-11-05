@@ -53,13 +53,21 @@ export function createPrompter(options: {
 
   async function askSecret(question: string, secretOptions: { validate?: Validator } = {}): Promise<string> {
     if (!options.isTTY) throw new Error('Secret input requires a TTY; provide the value using a supported environment variable or flag.');
+    const input = options.input;
+    const visibleFallback = () => {
+      options.output.write('Warning: hidden input is unavailable in this terminal; the next secret will be visible while you type.\n');
+      return ask(`${question} (visible fallback)`, { validate: secretOptions.validate });
+    };
     for (let attempt = 0; attempt < 5; attempt += 1) {
       options.output.write(`${paint(question)} (input hidden): `);
-      const input = options.input;
-      const rawMode = Boolean(input.isTTY && input.setRawMode);
+      if (!(input.isTTY && input.setRawMode)) return visibleFallback();
+      try {
+        input.setRawMode(true);
+      } catch {
+        return visibleFallback();
+      }
       let value = '';
       try {
-        if (rawMode) input.setRawMode?.(true);
         value = await new Promise<string>((resolve, reject) => {
           const onData = (chunk: Buffer | string) => {
             for (const character of chunk.toString()) {
@@ -83,7 +91,9 @@ export function createPrompter(options: {
           input.on('data', onData);
         });
       } finally {
-        if (rawMode) input.setRawMode?.(false);
+        try { input.setRawMode(false); } catch {
+          options.output.write('Warning: this terminal could not restore hidden-input mode.\n');
+        }
       }
       const invalid = secretOptions.validate?.(value);
       if (!invalid) return value;

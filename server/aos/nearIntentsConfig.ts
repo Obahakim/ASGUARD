@@ -3,8 +3,13 @@ export interface NearIntentsDefaults {
   verifier: string;
 }
 
-export function nearIntentsDefaults(network: 'testnet' | 'mainnet'): NearIntentsDefaults {
-  return network === 'testnet'
-    ? { apiUrl: 'https://www.usetidepool.tech', verifier: 'verifier.tidepool-sandbox.testnet' }
-    : { apiUrl: 'https://1click.chaindefuser.com', verifier: 'intents.near' };
+export function nearRpcDefault(network: 'testnet' | 'mainnet'): string {
+  return `https://rpc.${network}.near.org`;
+}
+
+export function nearIntentsDefaults(network: 'testnet' | 'mainnet', tidepoolDemoEnabled = false): NearIntentsDefaults {
+  if (network === 'testnet' && tidepoolDemoEnabled) {
+    return { apiUrl: 'https://www.usetidepool.tech', verifier: 'verifier.tidepool-sandbox.testnet' };
+  }
+  return { apiUrl: 'https://1click.chaindefuser.com', verifier: 'intents.near' };
 }

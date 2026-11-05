@@ -24,8 +24,8 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
     assert.equal(first.status, 0, first.stderr);
     const env = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
     assert.equal(env.getValue('ASGUARD_NEAR_NETWORK'), 'testnet');
-    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://www.usetidepool.tech');
-    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'verifier.tidepool-sandbox.testnet');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '', '');
@@ -101,6 +101,36 @@ test('check fails for placeholders, short tokens, mismatched keypairs, and non-H
       assert.equal(runSetup(['--check', '--env', file]).status, 1);
     }
     assert.equal(spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry], { cwd: root, encoding: 'utf8', shell: false }).status, 2);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('--yes applies official endpoint defaults and never retains a Tidepool demo wallet', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-safe-'));
+  const envPath = path.join(directory, '.env');
+  try {
+    const env = EnvFile.parse('');
+    env.setValue('ASGUARD_NEAR_NETWORK', 'testnet');
+    env.setValue('ASGUARD_NEAR_RPC_URL', 'https://rpc.mainnet.near.org');
+    env.setValue('ASGUARD_NEAR_INTENTS_API_URL', 'https://www.usetidepool.tech');
+    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', 'verifier.tidepool-sandbox.testnet');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'true');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'true');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', 'f'.repeat(64));
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', 'ed25519:private');
+    fs.writeFileSync(envPath, env.serialize());
+    const result = runSetup(['--yes', '--env', envPath, '--key-dir', path.join(directory, '.asguard')]);
+    assert.equal(result.status, 0, result.stderr);
+    const configured = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.testnet.near.org');
+    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
+    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
+    assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
+    assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
+    assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '', '');
+    assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '', '');
+    assert.equal(result.stdout.includes('dev stack start requested'), false);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

@@ -57,9 +57,10 @@ function tamperIntent(input: Record<string, unknown>): Record<string, unknown> {
 void runDemo(`demo:near:tidepool:${mode}`, async (config) => {
   if (mode !== 'approve' && mode !== 'tamper') throw new Error('Usage: npm run demo:near:tidepool:approve | npm run demo:near:tidepool:tamper.');
   if (config.network !== 'near:testnet') throw new Error('Tidepool demos are testnet-only; no mainnet quote or settlement is allowed.');
+  const tidepoolDefaults = nearIntentsDefaults('testnet', true);
   if (config.intentsApiUrl.replace(/\/$/, '') !== TIDEPOOL_TESTNET_URL
-    || config.verifier !== nearIntentsDefaults('testnet').verifier) {
-    throw new Error(`Tidepool demos require ${TIDEPOOL_TESTNET_URL} and verifier ${nearIntentsDefaults('testnet').verifier}.`);
+    || config.verifier !== tidepoolDefaults.verifier) {
+    throw new Error(`This Tidepool demo needs Tidepool URL/verifier configuration. Re-run npm run setup and opt into the Tidepool demo key, or set ASGUARD_NEAR_INTENTS_API_URL=${TIDEPOOL_TESTNET_URL} and ASGUARD_NEAR_INTENTS_VERIFIER=${tidepoolDefaults.verifier} manually.`);
   }
 
   const settle = mode === 'approve' && process.env.ASGUARD_DEMO_TIDEPOOL_SETTLE === 'true';

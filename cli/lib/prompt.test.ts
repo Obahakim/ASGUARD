@@ -4,7 +4,9 @@ import { PassThrough } from 'node:stream';
 import { createPrompter } from './prompt';
 
 test('secret input masks characters, supports backspace, and retries validation', async () => {
-  const input = new PassThrough();
+  const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => void };
+  input.isTTY = true;
+  input.setRawMode = () => undefined;
   const output = new PassThrough();
   let written = '';
   output.on('data', (chunk) => { written += chunk.toString(); });
@@ -16,6 +18,22 @@ test('secret input masks characters, supports backspace, and retries validation'
   assert.equal(written.includes('x'), false);
   assert.equal(written.includes('secret'), false);
   assert.match(written, /Too short/);
+  input.destroy();
+  output.destroy();
+});
+
+test('secret input falls back visibly when Windows cannot enable raw mode', async () => {
+  const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => void };
+  input.isTTY = true;
+  input.setRawMode = () => { throw new Error('raw mode unavailable'); };
+  const output = new PassThrough();
+  let written = '';
+  output.on('data', (chunk) => { written += chunk.toString(); });
+  const prompter = createPrompter({ input, output, isTTY: true, noColor: true });
+  const pending = prompter.askSecret('Token');
+  setTimeout(() => input.write('visible-secret\n'), 0);
+  assert.equal(await pending, 'visible-secret');
+  assert.match(written, /Warning: hidden input is unavailable/);
   input.destroy();
   output.destroy();
 });

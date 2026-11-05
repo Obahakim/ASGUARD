@@ -62,7 +62,7 @@ Use `npm run connect` to configure the host's runtime token and attestation publ
 
 ## Configuration
 
-The setup wizard is the primary path. See [.env.example](.env.example) for the full configuration reference and fallback. Testnet defaults use Tidepool at `https://www.usetidepool.tech` with verifier `verifier.tidepool-sandbox.testnet`. Mainnet must explicitly use official 1Click and `intents.near`. Tidepool demo settlement is testnet-only, opt-in, and uses a private key held by the demo host process; the backend strips `ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY` at startup.
+The setup wizard is the primary path. See [.env.example](.env.example) for the full configuration reference and fallback. Without Tidepool demo wallet opt-in, both networks use official 1Click at `https://1click.chaindefuser.com` with verifier `intents.near`. On testnet only, opting into the Tidepool demo wallet switches the URL to `https://www.usetidepool.tech` and verifier to `verifier.tidepool-sandbox.testnet`. Tidepool approval-only demos also require those Tidepool settings; if they are absent, the demo explains how to rerun setup or set the environment variables manually. Tidepool demo settlement is testnet-only, opt-in, and uses a private key held by the demo host process; the backend strips `ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY` at startup.
 
 Keep `.env`, `.asguard/`, and all private keys out of version control. Use HTTPS endpoints and distinct high-entropy runtime/admin credentials outside local development. Optional NEAR AI is annotate-only: it cannot change allow, HITL, or deny decisions.
 

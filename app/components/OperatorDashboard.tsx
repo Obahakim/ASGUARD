@@ -106,7 +106,7 @@ function SetupPage() {
     "  attestationPublicKey: readFileSync(process.env.ASGUARD_ATTESTATION_PUBLIC_KEY_PATH!, 'utf8'),",
     "  agentId: 'swap-agent', agentName: 'Swap agent',",
     "  payloadDomain: 'near-intent', network: 'near:testnet',",
-    "  expectedVerifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER || 'verifier.tidepool-sandbox.testnet',",
+    "  expectedVerifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER!,",
     '  idempotencyKey: crypto.randomUUID(), riskLevel: \'low\',',
     '  payload: exactIntent,',
     '}, async ({ attestation, canonicalPayload }) => {',

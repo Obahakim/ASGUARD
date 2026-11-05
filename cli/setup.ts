@@ -11,7 +11,7 @@ import { probeNearAi, probeRpc } from './lib/probe';
 import { validateEndpoint, validateNearAiEndpoint, validateNetwork, validatePort, validateSetupValues } from './lib/validate';
 import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
-import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
+import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
 import { offerPostSetupActions } from './lib/setupActions';
 
@@ -154,18 +154,6 @@ async function askValid(
   defaultValue?: string,
 ): Promise<string> {
   return prompter.ask(question, { validate: validator, ...(defaultValue === undefined ? {} : { default: defaultValue }) });
-}
-
-async function askSecretOrKeep(
-  prompter: Prompter,
-  question: string,
-  fallback: string,
-  validator: (value: string) => string | undefined,
-): Promise<string> {
-  const entered = await prompter.askSecret(`${question} (press Enter to keep current/default)`, {
-    validate: (value) => validator(value || fallback),
-  });
-  return entered || fallback;
 }
 
 async function collectSecret(
@@ -318,6 +306,9 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
   if (network === 'testnet') {
     const enableTidepool = await prompter.confirm('Create a local Tidepool on-chain demo testnet keypair and enable optional settlement?', false);
     if (!enableTidepool) {
+      const defaults = nearIntentsDefaults('testnet');
+      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
+      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
       env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
       env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
       env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
@@ -335,6 +326,9 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', pair.privateKey);
       env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'true');
       env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'true');
+      const defaults = nearIntentsDefaults('testnet', true);
+      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
+      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
       const warning = 'WARNING: Tidepool settlement is testnet only. The key stays in local .env; the backend strips it from its process at startup. Never commit .env or use a mainnet key.';
       console.log(noColor || process.env.NO_COLOR !== undefined ? warning : `\u001b[1m${warning}\u001b[0m`);
       try {
@@ -349,6 +343,9 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       }
     }
   } else {
+    const defaults = nearIntentsDefaults('mainnet');
+    env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
+    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
     env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
     env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
     env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
@@ -426,31 +423,22 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
     await prompter.ask('Confirm network', { validate: (value) => value === 'mainnet' ? undefined : 'Type mainnet to continue.' });
   }
   env.setValue('ASGUARD_NEAR_NETWORK', network);
-  const rpcDefault = !isUnsetValue(env.getValue('ASGUARD_NEAR_RPC_URL'))
-    ? env.getValue('ASGUARD_NEAR_RPC_URL') || `https://rpc.${network}.near.org`
-    : `https://rpc.${network}.near.org`;
-  const rpcUrl = await askSecretOrKeep(prompter, 'NEAR RPC URL', rpcDefault, (value) => {
-    try { validateEndpoint('ASGUARD_NEAR_RPC_URL', value); return undefined; } catch (error) { return safeError(error); }
-  });
-  const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
-  const currentIntentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL');
-  const knownIntentsUrls = ['https://1click.chaindefuser.com', 'https://www.usetidepool.tech'];
-  const intentsDefault = isUnsetValue(currentIntentsUrl) || knownIntentsUrls.includes(currentIntentsUrl || '')
-    ? intentsDefaults.apiUrl : currentIntentsUrl || intentsDefaults.apiUrl;
-  const intentsUrl = await askSecretOrKeep(prompter, 'NEAR Intents API URL', intentsDefault, (value) => {
-    try { validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', value); return undefined; } catch (error) { return safeError(error); }
-  });
-  env.setValue('ASGUARD_NEAR_RPC_URL', rpcUrl);
-  env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsUrl);
-  const currentVerifier = env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER');
-  const knownVerifiers = ['intents.near', 'verifier.tidepool-sandbox.testnet'];
-  if (isUnsetValue(currentVerifier) || knownVerifiers.includes(currentVerifier || '')) {
-    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
+  const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
+  const knownRpcUrls = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
+  const currentRpcUrl = env.getValue('ASGUARD_NEAR_RPC_URL');
+  let rpcUrl = !isUnsetValue(currentRpcUrl) && !knownRpcUrls.includes(currentRpcUrl || '') ? currentRpcUrl || rpcDefault : rpcDefault;
+  if (rpcUrl === rpcDefault && await prompter.confirm('Use custom NEAR RPC URL?', false)) {
+    rpcUrl = await askValid(prompter, 'Custom NEAR RPC URL', (value) => {
+      try { validateEndpoint('ASGUARD_NEAR_RPC_URL', value); return undefined; } catch (error) { return safeError(error); }
+    }, rpcDefault);
   }
+  env.setValue('ASGUARD_NEAR_RPC_URL', rpcUrl);
   try { console.log(`NEAR RPC: ${await probeRpc(rpcUrl)}`); } catch { console.log('NEAR RPC: unreachable (continuing)'); }
 
   const optionalResult = await configureOptional(env, prompter, network, noColor, regenerate);
   if (optionalResult !== 0) return optionalResult;
+  const intentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || nearIntentsDefaults(network as 'testnet' | 'mainnet').apiUrl;
+  const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet', intentsUrl === 'https://www.usetidepool.tech');
   const rows: Array<[string, Status, string]> = [
     ['ASGUARD_API_CREDENTIALS', runtime.status === 'kept' && dashboard.status === 'kept' ? 'kept' : 'set', `•••• (${credentials.length} chars)`],
     ['ASGUARD_AUDIT_KEY', audit.status, masked(audit.value)],
@@ -519,18 +507,18 @@ async function run(): Promise<number> {
     if (args.positionals.length) throw new Error(`Unexpected argument: ${args.positionals[0]}`);
     if (args.flags.has('yes') && args.flags.has('check')) throw new Error('--yes and --check cannot be combined.');
   } catch (error) {
-    console.error(`${safeError(error)}\n${HELP}`);
+    console.error(`[ASGUARD setup] ${safeError(error)}\n${HELP}`);
     return 2;
   }
   if (args.flags.has('help')) { console.log(HELP); return 0; }
-  if (!nodeVersionValid()) { console.error('ASGUARD setup requires Node.js 20.9.0 or later.'); return 1; }
+  if (!nodeVersionValid()) { console.error('[ASGUARD setup] Requires Node.js 20.9.0 or later.'); return 1; }
   const envPath = path.resolve(args.values.get('env') || '.env');
   const keyDirectory = path.resolve(args.values.get('key-dir') || '.asguard');
   if (args.flags.has('check')) {
-    try { return checkConfiguration(envPath); } catch (error) { console.log(`FAIL configuration: ${safeError(error)}`); return 1; }
+    try { return checkConfiguration(envPath); } catch (error) { console.error(`[ASGUARD setup] ${safeError(error)}`); return 1; }
   }
   if (!args.flags.has('yes') && !process.stdin.isTTY) {
-    console.error('Interactive setup requires a TTY; use --yes for safe defaults or --check to validate.');
+    console.error('[ASGUARD setup] Interactive setup requires a TTY; use --yes for safe defaults or --check to validate.');
     return 2;
   }
   const env = readEnvFile(envPath);
@@ -579,23 +567,18 @@ async function run(): Promise<number> {
       env.setValue('ASGUARD_ALLOWED_ORIGINS', isUnsetValue(env.getValue('ASGUARD_ALLOWED_ORIGINS')) ? 'http://localhost:3000' : env.getValue('ASGUARD_ALLOWED_ORIGINS') || 'http://localhost:3000');
       env.setValue('ASGUARD_API_URL', isUnsetValue(env.getValue('ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('ASGUARD_API_URL') || 'http://localhost:8080');
       env.setValue('NEXT_PUBLIC_ASGUARD_API_URL', isUnsetValue(env.getValue('NEXT_PUBLIC_ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('NEXT_PUBLIC_ASGUARD_API_URL') || 'http://localhost:8080');
-      env.setValue('ASGUARD_NEAR_RPC_URL', isUnsetValue(env.getValue('ASGUARD_NEAR_RPC_URL')) ? `https://rpc.${network}.near.org` : env.getValue('ASGUARD_NEAR_RPC_URL') || `https://rpc.${network}.near.org`);
-      const currentIntentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL');
-      if (isUnsetValue(currentIntentsUrl) || ['https://1click.chaindefuser.com', 'https://www.usetidepool.tech'].includes(currentIntentsUrl || '')) {
-        env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsDefaults.apiUrl);
-      }
-      const currentVerifier = env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER');
-      if (isUnsetValue(currentVerifier) || ['intents.near', 'verifier.tidepool-sandbox.testnet'].includes(currentVerifier || '')) {
-        env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
-      }
+      const currentRpcUrl = env.getValue('ASGUARD_NEAR_RPC_URL');
+      const knownRpcUrls = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
+      env.setValue('ASGUARD_NEAR_RPC_URL', isUnsetValue(currentRpcUrl) || knownRpcUrls.includes(currentRpcUrl || '')
+        ? nearRpcDefault(network as 'testnet' | 'mainnet') : currentRpcUrl || nearRpcDefault(network as 'testnet' | 'mainnet'));
+      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsDefaults.apiUrl);
+      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
       if (isUnsetValue(env.getValue('ASGUARD_AI_ENABLED'))) env.setValue('ASGUARD_AI_ENABLED', 'false');
       if (isUnsetValue(env.getValue('ASGUARD_DEMO_SUBMIT'))) env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
       env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
       env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
-      if (network === 'mainnet') {
-        env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
-        env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
-      }
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
       const intended = {
         credentials,
         auditKey,
@@ -623,7 +606,7 @@ async function run(): Promise<number> {
       console.log('Setup complete.');
       return 0;
     } catch (error) {
-      console.error(`Setup failed: ${safeError(error)}`);
+      console.error(`[ASGUARD setup] ${safeError(error)}`);
       return 1;
     }
   }
@@ -631,12 +614,12 @@ async function run(): Promise<number> {
     return await interactive(env, envPath, keyDirectory, args.flags.has('force'), args.flags.has('no-color'));
   } catch (error) {
     const code = error && typeof error === 'object' && 'exitCode' in error ? Number(error.exitCode) : 1;
-    if (code !== 130) console.error(`Setup failed: ${safeError(error)}`);
+    if (code !== 130) console.error(`[ASGUARD setup] ${safeError(error)}`);
     return code === 130 ? 130 : 1;
   }
 }
 
 void run().then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-  console.error(`Setup failed: ${safeError(error)}`);
+  console.error(`[ASGUARD setup] ${safeError(error)}`);
   process.exitCode = 1;
 });

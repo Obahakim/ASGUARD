@@ -22,7 +22,7 @@ The scripts authenticate against `/api/policy` before running. Missing or weak c
 
 ## Tidepool testnet Intents swap
 
-Tidepool is a free community-built, 1Click-compatible **testnet** sandbox, not affiliated with NEAR, Defuse, or 1Click. The `.env.example` and setup defaults use `https://www.usetidepool.tech` with `verifier.tidepool-sandbox.testnet` on testnet. Production mainnet must use the official `https://1click.chaindefuser.com` API and `intents.near`. ASGUARD approves and verifies payloads; it does not run the Tidepool solver.
+Tidepool is a free community-built, 1Click-compatible **testnet** sandbox, not affiliated with NEAR, Defuse, or 1Click. Without opting into the Tidepool demo wallet, setup and `.env.example` use official 1Click at `https://1click.chaindefuser.com` with verifier `intents.near`. On testnet, opting into the Tidepool demo wallet switches to `https://www.usetidepool.tech` with verifier `verifier.tidepool-sandbox.testnet`; Tidepool approval-only demos require that URL/verifier pair. Mainnet always uses official 1Click and `intents.near`. ASGUARD approves and verifies payloads; it does not run the Tidepool solver.
 
 With services running and the dashboard ready for HITL, run:
 
