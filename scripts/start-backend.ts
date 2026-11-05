@@ -2,8 +2,10 @@ import { getAuditSigningKey } from '../server/auditConfig';
 import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { isAllowedApiEndpoint } from '../server/endpointPolicy';
+import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 
 delete process.env.ASGUARD_DEMO_NEAR_PRIVATE_KEY;
+delete process.env.ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY;
 
 function validateEndpoint(name: string, value: string): void {
   let endpoint: URL;
@@ -33,7 +35,7 @@ async function start(): Promise<void> {
       throw new Error('ASGUARD_NEAR_NETWORK must be mainnet or testnet; use testnet for local demos.');
     }
     validateEndpoint('ASGUARD_NEAR_RPC_URL', process.env.ASGUARD_NEAR_RPC_URL || `https://rpc.${network}.near.org`);
-    validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', process.env.ASGUARD_NEAR_INTENTS_API_URL || 'https://1click.chaindefuser.com');
+    validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', process.env.ASGUARD_NEAR_INTENTS_API_URL || nearIntentsDefaults(network).apiUrl);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ASGUARD startup] ${message}`);

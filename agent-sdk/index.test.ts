@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { issueApprovalAttestation } from '../server/approvalAttestation';
+import { assertApprovedThenSignIntent, issueApprovalAttestation } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import type { ApprovalAttestation, SignApprovalResponse } from '../server/types';
 import { AsguardApprovalError, AsguardReportError, connectAgent, reportSubmission, withAsguardApproval } from './index';
@@ -76,6 +76,22 @@ test('bad attestation is rejected without invoking the host callback', async () 
     callbackCount += 1;
   }), /attestation verification failed/i);
   assert.equal(callbackCount, 0);
+});
+
+test('a post-attestation change to the NEAR Intent is rejected before any submission callback', async () => {
+  const decision = approvedResponse();
+  const changed = { ...intent, amount: '1000000000000000000001' };
+  let submissionAttempted = false;
+  await withAsguardApproval(options(async () => jsonResponse(decision)), async ({ attestation }) => {
+    const verifyAndSubmit = () => {
+      assertApprovedThenSignIntent(changed, attestation, {
+        publicKey: attestationPublicKey, expectedAgentId: 'test-agent', expectedNetwork: 'near:testnet', expectedVerifier: 'intents.near',
+      });
+      submissionAttempted = true;
+    };
+    assert.throws(verifyAndSubmit, /payload_hash_mismatch/);
+  });
+  assert.equal(submissionAttempted, false);
 });
 
 test('near transfer callback receives only the exact approved testnet transfer description', async () => {

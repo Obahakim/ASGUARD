@@ -11,6 +11,7 @@ import { probeNearAi, probeRpc } from './lib/probe';
 import { validateEndpoint, validateNearAiEndpoint, validateNetwork, validatePort, validateSetupValues } from './lib/validate';
 import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
+import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 
 const HELP = `ASGUARD server setup
 
@@ -108,6 +109,7 @@ function checkItem(name: string, operation: () => void): boolean {
 function checkConfiguration(envPath: string): number {
   const env = readEnvFile(envPath);
   const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
+  const intentsDefaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet');
   const values = {
     credentials: env.getValue('ASGUARD_API_CREDENTIALS'),
     auditKey: env.getValue('ASGUARD_AUDIT_KEY'),
@@ -116,7 +118,7 @@ function checkConfiguration(envPath: string): number {
     port: env.getValue('ASGUARD_PORT') || '8080',
     network,
     rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || `https://rpc.${network}.near.org`,
-    intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || 'https://1click.chaindefuser.com',
+    intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || intentsDefaults.apiUrl,
   };
   let passed = true;
   const run = (name: string, action: () => void) => { passed = checkItem(name, action) && passed; };
@@ -388,14 +390,21 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   const rpcUrl = await askSecretOrKeep(prompter, 'NEAR RPC URL', rpcDefault, (value) => {
     try { validateEndpoint('ASGUARD_NEAR_RPC_URL', value); return undefined; } catch (error) { return safeError(error); }
   });
-  const intentsDefault = !isUnsetValue(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'))
-    ? env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || 'https://1click.chaindefuser.com'
-    : 'https://1click.chaindefuser.com';
+  const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
+  const currentIntentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL');
+  const knownIntentsUrls = ['https://1click.chaindefuser.com', 'https://www.usetidepool.tech'];
+  const intentsDefault = isUnsetValue(currentIntentsUrl) || knownIntentsUrls.includes(currentIntentsUrl || '')
+    ? intentsDefaults.apiUrl : currentIntentsUrl || intentsDefaults.apiUrl;
   const intentsUrl = await askSecretOrKeep(prompter, 'NEAR Intents API URL', intentsDefault, (value) => {
     try { validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', value); return undefined; } catch (error) { return safeError(error); }
   });
   env.setValue('ASGUARD_NEAR_RPC_URL', rpcUrl);
   env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsUrl);
+  const currentVerifier = env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER');
+  const knownVerifiers = ['intents.near', 'verifier.tidepool-sandbox.testnet'];
+  if (isUnsetValue(currentVerifier) || knownVerifiers.includes(currentVerifier || '')) {
+    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
+  }
   try { console.log(`NEAR RPC: ${await probeRpc(rpcUrl)}`); } catch { console.log('NEAR RPC: unreachable (continuing)'); }
 
   const optionalResult = await configureOptional(env, prompter, network, noColor);
@@ -408,6 +417,7 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
     ['ASGUARD_NEAR_NETWORK', 'set', network],
     ['ASGUARD_NEAR_RPC_URL', 'set', masked(rpcUrl)],
     ['ASGUARD_NEAR_INTENTS_API_URL', 'set', masked(intentsUrl)],
+    ['ASGUARD_NEAR_INTENTS_VERIFIER', 'set', env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER') || intentsDefaults.verifier],
     ['ASGUARD_AI_ENABLED', env.getValue('ASGUARD_AI_ENABLED') === 'true' ? 'set' : 'skipped', env.getValue('ASGUARD_AI_ENABLED') === 'true' ? 'enabled' : 'off'],
     ['ASGUARD_AI_API_KEY', env.getValue('ASGUARD_AI_API_KEY') ? 'set' : 'skipped', env.getValue('ASGUARD_AI_API_KEY') ? masked(env.getValue('ASGUARD_AI_API_KEY') || '') : '(empty)'],
     ['ASGUARD_WATCH_DEMO_ACCOUNT', env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') ? 'set' : 'skipped', env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '(empty)'],
@@ -485,7 +495,7 @@ async function run(): Promise<number> {
       const keys = [
         'ASGUARD_API_CREDENTIALS', 'ASGUARD_AUDIT_KEY', 'ASGUARD_ATTESTATION_PRIVATE_KEY_PATH',
         'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', 'ASGUARD_NEAR_NETWORK', 'ASGUARD_PORT',
-        'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT',
+        'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER', 'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT',
       ];
       const before = new Map(keys.map((key) => [key, env.getValue(key)]));
       const oldCredentials = credentialsByRole(env.getValue('ASGUARD_API_CREDENTIALS'));
@@ -517,6 +527,7 @@ async function run(): Promise<number> {
       const configuredNetwork = env.getValue('ASGUARD_NEAR_NETWORK');
       const network = isUnsetValue(configuredNetwork) ? 'testnet' : configuredNetwork || 'testnet';
       validateNetwork(network);
+      const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
       env.setValue('ASGUARD_NEAR_NETWORK', network);
       env.setValue('ASGUARD_PORT', isUnsetValue(env.getValue('ASGUARD_PORT')) ? '8080' : env.getValue('ASGUARD_PORT') || '8080');
       env.setValue('ASGUARD_HOST', isUnsetValue(env.getValue('ASGUARD_HOST')) ? 'localhost' : env.getValue('ASGUARD_HOST') || 'localhost');
@@ -524,7 +535,14 @@ async function run(): Promise<number> {
       env.setValue('ASGUARD_API_URL', isUnsetValue(env.getValue('ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('ASGUARD_API_URL') || 'http://localhost:8080');
       env.setValue('NEXT_PUBLIC_ASGUARD_API_URL', isUnsetValue(env.getValue('NEXT_PUBLIC_ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('NEXT_PUBLIC_ASGUARD_API_URL') || 'http://localhost:8080');
       env.setValue('ASGUARD_NEAR_RPC_URL', isUnsetValue(env.getValue('ASGUARD_NEAR_RPC_URL')) ? `https://rpc.${network}.near.org` : env.getValue('ASGUARD_NEAR_RPC_URL') || `https://rpc.${network}.near.org`);
-      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', isUnsetValue(env.getValue('ASGUARD_NEAR_INTENTS_API_URL')) ? 'https://1click.chaindefuser.com' : env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || 'https://1click.chaindefuser.com');
+      const currentIntentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL');
+      if (isUnsetValue(currentIntentsUrl) || ['https://1click.chaindefuser.com', 'https://www.usetidepool.tech'].includes(currentIntentsUrl || '')) {
+        env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsDefaults.apiUrl);
+      }
+      const currentVerifier = env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER');
+      if (isUnsetValue(currentVerifier) || ['intents.near', 'verifier.tidepool-sandbox.testnet'].includes(currentVerifier || '')) {
+        env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
+      }
       if (isUnsetValue(env.getValue('ASGUARD_AI_ENABLED'))) env.setValue('ASGUARD_AI_ENABLED', 'false');
       if (isUnsetValue(env.getValue('ASGUARD_DEMO_SUBMIT'))) env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
       const intended = {

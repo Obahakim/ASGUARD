@@ -1,5 +1,6 @@
 import type { ChainHealth } from './chainHealth';
 import { isAllowedApiEndpoint } from '../endpointPolicy';
+import { nearIntentsDefaults } from './nearIntentsConfig';
 
 export type NearNetwork = 'mainnet' | 'testnet';
 
@@ -31,8 +32,9 @@ export class NearAdapter {
     }
     this.network = network;
     this.rpcUrl = config.rpcUrl ?? process.env.ASGUARD_NEAR_RPC_URL ?? `https://rpc.${network}.near.org`;
-    this.intentsApiUrl = config.intentsApiUrl ?? process.env.ASGUARD_NEAR_INTENTS_API_URL ?? 'https://1click.chaindefuser.com';
-    this.intentsVerifier = config.intentsVerifier ?? process.env.ASGUARD_NEAR_INTENTS_VERIFIER ?? 'intents.near';
+    const intentsDefaults = nearIntentsDefaults(network);
+    this.intentsApiUrl = config.intentsApiUrl ?? process.env.ASGUARD_NEAR_INTENTS_API_URL ?? intentsDefaults.apiUrl;
+    this.intentsVerifier = config.intentsVerifier ?? process.env.ASGUARD_NEAR_INTENTS_VERIFIER ?? intentsDefaults.verifier;
     this.chainSignaturesContract = config.chainSignaturesContract ?? process.env.ASGUARD_NEAR_CHAIN_SIGNATURES_CONTRACT
       ?? (network === 'mainnet' ? 'v1.signer' : 'v1.signer-prod.testnet');
     for (const endpoint of [this.rpcUrl, this.intentsApiUrl]) {

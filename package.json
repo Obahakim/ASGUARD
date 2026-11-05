@@ -30,6 +30,8 @@
     "demo:agent-guard": "node scripts/run-demo.cjs scripts/demo-agent-guard.ts",
     "demo:watch": "node scripts/run-demo.cjs scripts/demo-watch.ts",
     "demo:near:approve:submit": "node scripts/run-demo.cjs scripts/demo-near-approve-submit.ts",
+    "demo:near:tidepool:approve": "node scripts/run-demo.cjs scripts/demo-near-tidepool.ts approve",
+    "demo:near:tidepool:tamper": "node scripts/run-demo.cjs scripts/demo-near-tidepool.ts tamper",
     "setup": "node --import tsx cli/setup.ts",
     "connect": "node --import tsx cli/connect.ts",
     "lint": "eslint .",

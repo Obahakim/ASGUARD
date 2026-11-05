@@ -60,9 +60,11 @@ Start both services as above and use **Approvals** in the dashboard when a reque
 5. Set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID, then run `npm run demo:watch` → see the registered watch and activity history (an empty history is valid).
 6. Optional tiny transfer proof: configure a funded NEAR testnet demo account and recipient in local `.env`, explicitly set `ASGUARD_DEMO_SUBMIT=true`, then run `npm run demo:near:approve:submit`. The host verifies the Ed25519 attestation, waits for HITL, sends at most `0.01 NEAR` on testnet, then reports its tx hash to ASGUARD. The backend never signs or broadcasts; the demo private key is removed before backend startup.
 
-The default demos stop before real signing or transaction submission; they use no private key or live fund movement. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions. For custom payloads and multi-scenario runs, see [docs/DEMO.md](docs/DEMO.md).
+For real testnet Intents quotes, run `npm run demo:near:tidepool:approve`. Tidepool is a community-built 1Click-compatible testnet sandbox, unaffiliated with NEAR, Defuse, or 1Click; it uses `https://www.usetidepool.tech` and `verifier.tidepool-sandbox.testnet`. This command requests a live quote and ASGUARD approval but does not sign or settle by default. `npm run demo:near:tidepool:tamper` changes the approved payload and demonstrates the attestation binding rejection without submitting it. To settle the capped 0.1 USDC swap on testnet, explicitly set `ASGUARD_DEMO_TIDEPOOL_SETTLE=true` and provide the host-only implicit account ID and matching `ed25519:` private key documented in [docs/DEMO.md](docs/DEMO.md); optional `ASGUARD_DEMO_TIDEPOOL_FAUCET=true` requests Tidepool test tokens. The ASGUARD server never receives the key and does not run the solver.
 
-The optional `demo:near:approve:submit` is the exception: it is disabled unless `ASGUARD_DEMO_SUBMIT=true`, requires NEAR testnet, and sends at most `0.01 NEAR` from a host-side demo account after verified approval and dashboard HITL. The private key is read from local `.env` by the demo process and stripped before backend startup. ASGUARD only records the host-reported transaction hash.
+The default demos stop before real signing or transaction submission; they use no configured wallet key or live fund movement. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions. Production mainnet configuration must switch back to official 1Click (`https://1click.chaindefuser.com`) and `intents.near`. For custom payloads and multi-scenario runs, see [docs/DEMO.md](docs/DEMO.md).
+
+The existing `demo:near:approve:submit` transfer command is disabled unless `ASGUARD_DEMO_SUBMIT=true`, requires NEAR testnet, and sends at most `0.01 NEAR` from a host-side demo account after verified approval and dashboard HITL. The private key is read from local `.env` by the demo process and stripped before backend startup. ASGUARD only records the host-reported transaction hash.
 
 ## Wallet watch
 
@@ -205,7 +207,7 @@ Start both services as above. Use "Approvals" in the dashboard when a request en
 5. Do (optional): Set `ASGUARD_WATCH_DEMO_ACCOUNT` to a public NEAR testnet account ID, then `npm run demo:watch`  
    See: Registered watch and activity history (an empty history is valid).
 
-Every demo stops before real signing or transaction submission. No private key, mainnet funds, or live fund movement is used. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions.
+The approve/hitl/block/agent-guard/watch demos stop before real signing or transaction submission. Tidepool testnet quotes also stop before settlement unless the host-only `ASGUARD_DEMO_TIDEPOOL_SETTLE=true` flag and matching implicit account key are configured; the tamper demo never signs or submits. No command allows mainnet settlement. Missing/weak credentials, non-testnet configuration, or an unreachable backend fail with actionable instructions.
 
 Custom payloads and multi-scenario runs: [docs/DEMO.md](docs/DEMO.md).
 

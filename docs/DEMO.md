@@ -1,6 +1,6 @@
 # ASGUARD demo guide
 
-The demo commands exercise the local approval API and stop at host-side approval verification. They never accept a wallet key, sign, or submit a transaction.
+The default demo commands exercise the local approval API and stop at host-side approval verification. Tidepool has a separate optional host-side settlement flow that is disabled unless explicitly enabled; the ASGUARD backend never receives its wallet key and never signs or submits.
 
 ## Setup
 
@@ -19,6 +19,31 @@ The demo commands exercise the local approval API and stop at host-side approval
 The demo requires `ASGUARD_DEMO_NEAR_ACCOUNT_ID`, `ASGUARD_DEMO_NEAR_PRIVATE_KEY`, `ASGUARD_DEMO_NEAR_RECIPIENT`, and optionally `ASGUARD_DEMO_NEAR_AMOUNT` (default `0.001`). Never use a mainnet key. A pending transfer requires an operator decision in the dashboard; rejection and timeout do not reach the host signing callback.
 
 The scripts authenticate against `/api/policy` before running. Missing or weak credentials, an unreachable backend, or a non-testnet network fail before a demo request is sent. Low-risk intents can still require HITL when fresh verified price data or policy allowlists are unavailable; this is the intended fail-closed behavior.
+
+## Tidepool testnet Intents swap
+
+Tidepool is a free community-built, 1Click-compatible **testnet** sandbox, not affiliated with NEAR, Defuse, or 1Click. The `.env.example` and setup defaults use `https://www.usetidepool.tech` with `verifier.tidepool-sandbox.testnet` on testnet. Production mainnet must use the official `https://1click.chaindefuser.com` API and `intents.near`. ASGUARD approves and verifies payloads; it does not run the Tidepool solver.
+
+With services running and the dashboard ready for HITL, run:
+
+```sh
+npm run demo:near:tidepool:approve
+npm run demo:near:tidepool:tamper
+```
+
+Both commands request a live Tidepool quote, obtain its exact `swap_transfer` intent payload, bind that payload and quote signature into ASGUARD’s near-intent approval, and register the public demo account with `connectAgent`. The first command is approval-only by default: it does not sign, submit, or move tokens. The tamper command gets approval for payload A, changes its amount and signed intent to payload B, then re-verifies B against A’s attestation. It must print `attestation/payload binding rejected change after approval`; it never signs or submits, even if settlement is enabled.
+
+For an actual testnet settlement, create/use a NEAR implicit account and add these host-only values to `.env`:
+
+```dotenv
+ASGUARD_DEMO_TIDEPOOL_SETTLE=true
+ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID=<64-character lowercase hex public-key account ID>
+ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY=ed25519:<base58 NEAR secret key>
+```
+
+The account ID must be the public key encoded as 64 lowercase hex characters and match the private key. The approval demo is capped at $2 and requests a 0.1 USDC swap. Optionally set `ASGUARD_DEMO_TIDEPOOL_FAUCET=true` to request Tidepool’s `mode: intents` USDC drip before the swap (Tidepool limits faucet use). Otherwise, fund that account’s Intents balance through Tidepool first. The host waits for a dashboard decision, verifies the attestation again, signs Tidepool’s generated raw Ed25519 payload locally, submits it to Tidepool, then polls for final status and an explorer link. The backend strips `ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY` at startup. Never use a mainnet key; the demo refuses mainnet and refuses a non-Tidepool endpoint.
+
+Tidepool test tokens have no value. Tidepool operates the testnet maker/solver and bridge relayer; those are external to ASGUARD. If Tidepool is unavailable, the demo prints a clear error while the core ASGUARD server continues to run.
 
 ## Multi-scenario suite
 

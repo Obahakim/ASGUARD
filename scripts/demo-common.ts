@@ -2,6 +2,7 @@ import { parseApiCredentials } from '../server/auth';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isAllowedApiEndpoint } from '../server/endpointPolicy';
+import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 
 export interface DemoConfig {
   apiUrl: string;
@@ -10,6 +11,7 @@ export interface DemoConfig {
   attestationPublicKey: string;
   network: 'near:testnet';
   verifier: string;
+  intentsApiUrl: string;
 }
 
 const credentialFix = 'Copy .env.example to .env, replace every credential placeholder with a different random value of at least 32 bytes, then restart the backend. Generate values with: node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'hex\'))".';
@@ -70,7 +72,8 @@ export function loadDemoConfig(): DemoConfig {
     readToken: readCredential.token,
     attestationPublicKey,
     network: 'near:testnet',
-    verifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER || 'intents.near',
+    verifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER || nearIntentsDefaults('testnet').verifier,
+    intentsApiUrl: process.env.ASGUARD_NEAR_INTENTS_API_URL || nearIntentsDefaults('testnet').apiUrl,
   };
 }
 
@@ -94,7 +97,7 @@ export async function preflightDemo(config: DemoConfig, command: string): Promis
   }
 
   console.log(`Preflight: backend reachable and authenticated at ${config.apiUrl}; network=${config.network}; verifier=${config.verifier}.`);
-  console.log('Safety: testnet approval-only demo; no wallet, private key, signing, or transaction submission is used.');
+  console.log('Safety: ASGUARD never holds a wallet key. Any demo signing or submission is host-side and requires that demo’s explicit flag.');
 }
 
 export async function runDemo(command: string, action: (config: DemoConfig) => Promise<void>): Promise<void> {

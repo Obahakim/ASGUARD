@@ -23,6 +23,9 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
     const first = runSetup(['--yes', '--env', envPath, '--key-dir', keys]);
     assert.equal(first.status, 0, first.stderr);
     const env = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    assert.equal(env.getValue('ASGUARD_NEAR_NETWORK'), 'testnet');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://www.usetidepool.tech');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'verifier.tidepool-sandbox.testnet');
     const credentials = JSON.parse(env.getValue('ASGUARD_API_CREDENTIALS') || '') as Array<{ token: string }>;
     const auditKey = env.getValue('ASGUARD_AUDIT_KEY') || '';
     const privateKey = fs.readFileSync(path.join(keys, 'attestation-private.pem'), 'utf8');
