@@ -47,6 +47,19 @@ test('secret input rejects non-TTY use', async () => {
   output.destroy();
 });
 
+test('optional public account prompts accept blank input as skip', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const prompter = createPrompter({ input, output, isTTY: false, noColor: true });
+  const pending = prompter.ask('Account (leave empty to skip)', {
+    validate: (value) => !value || /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/.test(value) ? undefined : 'Enter an account or leave empty.',
+  });
+  setTimeout(() => input.write('\n'), 0);
+  assert.equal(await pending, '');
+  input.destroy();
+  output.destroy();
+});
+
 test('Ctrl-C exits with 130 and restores raw mode', async () => {
   const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => void };
   input.isTTY = true;

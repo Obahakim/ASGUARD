@@ -257,9 +257,17 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
   }
 
   if (await prompter.confirm('Configure a public wallet-watch demo account?', false)) {
-    const account = await askValid(prompter, 'ASGUARD_WATCH_DEMO_ACCOUNT', (value) =>
-      validateAccount(value) ? undefined : 'Enter a valid public NEAR account ID.');
-    env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', account);
+    let account = '';
+    try {
+      account = await prompter.ask('ASGUARD_WATCH_DEMO_ACCOUNT (leave empty to skip)', {
+        validate: (value) => !value || validateAccount(value) ? undefined : 'Enter a valid public NEAR account ID, or leave empty to skip.',
+      });
+    } catch (error) {
+      if (safeError(error) !== 'Too many invalid responses.') throw error;
+      console.log('Skipping wallet-watch demo account after invalid entries.');
+    }
+    if (account) env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', account);
+    else console.log('Skipping wallet-watch demo account.');
   }
 
   if (await prompter.confirm('Configure webhook alerts?', false)) {
@@ -426,11 +434,14 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
   const knownRpcUrls = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
   const currentRpcUrl = env.getValue('ASGUARD_NEAR_RPC_URL');
-  let rpcUrl = !isUnsetValue(currentRpcUrl) && !knownRpcUrls.includes(currentRpcUrl || '') ? currentRpcUrl || rpcDefault : rpcDefault;
-  if (rpcUrl === rpcDefault && await prompter.confirm('Use custom NEAR RPC URL?', false)) {
-    rpcUrl = await askValid(prompter, 'Custom NEAR RPC URL', (value) => {
-      try { validateEndpoint('ASGUARD_NEAR_RPC_URL', value); return undefined; } catch (error) { return safeError(error); }
-    }, rpcDefault);
+  let rpcUrl = rpcDefault;
+  if (!isUnsetValue(currentRpcUrl) && !knownRpcUrls.includes(currentRpcUrl || '')) {
+    try {
+      validateEndpoint('ASGUARD_NEAR_RPC_URL', currentRpcUrl || '');
+      rpcUrl = currentRpcUrl || rpcDefault;
+    } catch {
+      console.log('Ignoring invalid custom NEAR RPC URL; using the network default.');
+    }
   }
   env.setValue('ASGUARD_NEAR_RPC_URL', rpcUrl);
   try { console.log(`NEAR RPC: ${await probeRpc(rpcUrl)}`); } catch { console.log('NEAR RPC: unreachable (continuing)'); }
