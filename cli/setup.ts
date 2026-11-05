@@ -12,6 +12,8 @@ import { validateEndpoint, validateNearAiEndpoint, validateNetwork, validatePort
 import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
+import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
+import { offerPostSetupActions } from './lib/setupActions';
 
 const HELP = `ASGUARD server setup
 
@@ -214,7 +216,7 @@ function validateAccount(value: string): boolean {
   return value.length >= 2 && value.length <= 64 && accountPattern.test(value);
 }
 
-async function configureOptional(env: EnvFile, prompter: Prompter, network: string, noColor: boolean): Promise<number> {
+async function configureOptional(env: EnvFile, prompter: Prompter, network: string, noColor: boolean, regenerate: boolean): Promise<number> {
   if (await prompter.confirm('Configure optional ports and origins?', false)) {
     env.setValue('ASGUARD_HOST', await prompter.ask('ASGUARD_HOST', { default: env.getValue('ASGUARD_HOST') || 'localhost' }));
     env.setValue('ASGUARD_PORT', await askValid(prompter, 'ASGUARD_PORT', (value) => {
@@ -312,6 +314,46 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       env.setValue('ASGUARD_DEMO_SUBMIT', privateKey ? 'true' : 'false');
     }
   } else env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
+
+  if (network === 'testnet') {
+    const enableTidepool = await prompter.confirm('Create a local Tidepool on-chain demo testnet keypair and enable optional settlement?', false);
+    if (!enableTidepool) {
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
+    } else {
+      const currentKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
+      const currentAccount = env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
+      const existingValid = nearDemoKeyMatches(currentKey, currentAccount);
+      let rotate = !existingValid;
+      if (existingValid && regenerate) {
+        rotate = await prompter.confirm('Rotate the existing Tidepool demo keypair?', false);
+      }
+      const pair = rotate ? generateNearDemoKeyPair() : { accountId: currentAccount, privateKey: currentKey };
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', pair.accountId);
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', pair.privateKey);
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'true');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'true');
+      const warning = 'WARNING: Tidepool settlement is testnet only. The key stays in local .env; the backend strips it from its process at startup. Never commit .env or use a mainnet key.';
+      console.log(noColor || process.env.NO_COLOR !== undefined ? warning : `\u001b[1m${warning}\u001b[0m`);
+      try {
+        const response = await fetch('https://www.usetidepool.tech/v0/health', { signal: AbortSignal.timeout(5_000) });
+        if (!response.ok) console.log(`Tidepool health probe returned HTTP ${response.status}; setup will continue.`);
+      } catch { console.log('Tidepool health probe unavailable; setup will continue.'); }
+      if (await prompter.confirm('Copy Tidepool account ID to clipboard?', true)) {
+        console.log(copyToClipboard(pair.accountId) ? 'Account ID copied.' : 'Clipboard unavailable.');
+      }
+      if (await prompter.confirm('Copy the Tidepool private key to clipboard? It is sensitive.', false)) {
+        console.log(copyToClipboard(pair.privateKey) ? 'Private key copied.' : 'Clipboard unavailable.');
+      }
+    }
+  } else {
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
+    env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
+  }
   return 0;
 }
 
@@ -407,7 +449,7 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   }
   try { console.log(`NEAR RPC: ${await probeRpc(rpcUrl)}`); } catch { console.log('NEAR RPC: unreachable (continuing)'); }
 
-  const optionalResult = await configureOptional(env, prompter, network, noColor);
+  const optionalResult = await configureOptional(env, prompter, network, noColor, regenerate);
   if (optionalResult !== 0) return optionalResult;
   const rows: Array<[string, Status, string]> = [
     ['ASGUARD_API_CREDENTIALS', runtime.status === 'kept' && dashboard.status === 'kept' ? 'kept' : 'set', `•••• (${credentials.length} chars)`],
@@ -454,7 +496,9 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   verifyNodeEnvFile(envPath, credentials, audit.value);
   for (const action of outputActions) action();
   console.log(changed ? `Wrote ${envPath}` : `${envPath} unchanged.`);
-  console.log('Next steps: npm run dev:backend, then npm run dev:frontend. The dashboard token is stored in .env; copy it to the clipboard if you need to sign in.');
+  await offerPostSetupActions({
+    interactiveTTY: Boolean(process.stdin.isTTY), yes: false, check: false, prompter,
+  });
   return 0;
 }
 
@@ -496,6 +540,7 @@ async function run(): Promise<number> {
         'ASGUARD_API_CREDENTIALS', 'ASGUARD_AUDIT_KEY', 'ASGUARD_ATTESTATION_PRIVATE_KEY_PATH',
         'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', 'ASGUARD_NEAR_NETWORK', 'ASGUARD_PORT',
         'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER', 'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT',
+        'ASGUARD_DEMO_TIDEPOOL_SETTLE', 'ASGUARD_DEMO_TIDEPOOL_FAUCET',
       ];
       const before = new Map(keys.map((key) => [key, env.getValue(key)]));
       const oldCredentials = credentialsByRole(env.getValue('ASGUARD_API_CREDENTIALS'));
@@ -545,6 +590,12 @@ async function run(): Promise<number> {
       }
       if (isUnsetValue(env.getValue('ASGUARD_AI_ENABLED'))) env.setValue('ASGUARD_AI_ENABLED', 'false');
       if (isUnsetValue(env.getValue('ASGUARD_DEMO_SUBMIT'))) env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
+      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
+      if (network === 'mainnet') {
+        env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
+        env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
+      }
       const intended = {
         credentials,
         auditKey,

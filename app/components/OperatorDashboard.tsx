@@ -106,7 +106,7 @@ function SetupPage() {
     "  attestationPublicKey: readFileSync(process.env.ASGUARD_ATTESTATION_PUBLIC_KEY_PATH!, 'utf8'),",
     "  agentId: 'swap-agent', agentName: 'Swap agent',",
     "  payloadDomain: 'near-intent', network: 'near:testnet',",
-    "  expectedVerifier: 'intents.near',",
+    "  expectedVerifier: process.env.ASGUARD_NEAR_INTENTS_VERIFIER || 'verifier.tidepool-sandbox.testnet',",
     '  idempotencyKey: crypto.randomUUID(), riskLevel: \'low\',',
     '  payload: exactIntent,',
     '}, async ({ attestation, canonicalPayload }) => {',
@@ -116,19 +116,19 @@ function SetupPage() {
   return (
     <div className="space-y-5">
       <PageIntro title="Operator & agent runbook" text="Run the existing control plane and connect a signing host without moving signing authority into ASGUARD." />
-      <Card title="Run locally" kicker="API :8080 · dashboard :3000">
+      <Card title="Run locally" kicker="One command · API :8080 · dashboard :3000">
         <div className="grid gap-3 md:grid-cols-2">
           {[
-            ['01 · Install', 'git clone <repository>\ncd ASGUARD\nnpm install'],
-            ['02 · Configure', 'Copy .env.example to .env. Configure runtime/operator credentials, a server-only ASGUARD_AUDIT_KEY, and matching Ed25519 attestation key paths. Share only the public key with hosts.'],
-            ['03 · Backend', 'npm run dev:backend\n# http://localhost:8080'],
-            ['04 · Frontend', 'npm run dev:frontend\n# http://localhost:3000'],
-            ['05 · Connect', 'POST /api/agents/connect with agent_id, agent_name, network, and public account_ids; MCP clients can call asguard_connect_agent.'],
-            ['06 · Resolve HITL', 'Run npm run demo:near:hitl. Review and resolve the request from Operations.'],
+            ['01 · Install', 'npm install'],
+            ['02 · Configure and start', 'npm run setup\nnpm run dev\n# backend :8080 · dashboard :3000\nSetup can optionally create a Tidepool testnet demo key, enable settlement/faucet, start the stack, and open the browser.'],
+            ['03 · Sign in', 'Open http://localhost:3000 and use the dashboard token at .asguard/dashboard-token.txt.'],
+            ['04 · Run demos', 'Use the demo grid below. Resolve HITL requests from Approvals.'],
+            ['05 · Agent host', 'npm run connect; then call connectAgent and wrap signing in withAsguardApproval.'],
+            ['Fallback config', 'If needed, use .env.example as a reference. The setup wizard is the primary configuration path.'],
           ].map(([title, text]) => <div key={title} className="rounded-xl border p-4"><b className="text-[10px]">{title}</b><pre className="mt-2 whitespace-pre-wrap break-words text-[9px] leading-4 text-slate-600">{text}</pre></div>)}
         </div>
       </Card>
-      <Card title="Connect a trusted agent host" kicker="Request → decision → verify">
+      <Card title="Connect a trusted agent host" kicker="Runtime token + public attestation key">
         <p className="text-[9px] leading-5 text-slate-600">Agents call <code>POST /api/approvals/near-intent</code> or <code>POST /api/approvals/chain-signature</code> with a runtime Bearer credential. MCP clients call <code>POST /mcp</code>. Poll with <code>GET /api/approvals/:request_id</code>.</p>
         <pre className="mt-4 overflow-auto whitespace-pre-wrap rounded-xl bg-[#172b3d] p-4 text-[9px] leading-5 text-white"><code>{code}</code></pre>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -142,12 +142,14 @@ function SetupPage() {
             ['npm run demo:near:approve', 'Low-risk approval and host verification'],
             ['npm run demo:near:hitl', 'HITL resolved from Operations'],
             ['npm run demo:near:block', 'Expired intent rejection'],
+            ['npm run demo:near:tidepool:approve', 'Live Tidepool testnet quote and approval; settle is opt-in'],
+            ['npm run demo:near:tidepool:tamper', 'Changed payload fails attestation binding; no value move'],
             ['npm run demo:agent-guard', 'Callback blocked until verification'],
             ['npm run demo:watch', 'Register and inspect public account activity'],
             ['npm run demo:near:approve:submit', 'Opt-in testnet transfer, maximum 0.01 NEAR'],
           ].map(([cmd, text]) => <div key={cmd} className="rounded-lg border p-3"><code className="text-[9px] font-bold text-sky-950">{cmd}</code><p className="mt-1 text-[8px] text-slate-500">{text}</p></div>)}
         </div>
-        <p className="mt-3 text-[9px] text-slate-500">The server-only audit HMAC key and attestation private key never go to the host. Hosts receive only the Ed25519 public key. ASGUARD never signs or broadcasts transactions.</p>
+        <p className="mt-3 text-[9px] text-slate-500">The server-only audit HMAC key and attestation private key never go to the host. Hosts receive the Ed25519 public key and runtime token. ASGUARD never signs or broadcasts; only a trusted host may act inside the verified callback.</p>
       </Card>
     </div>
   );

@@ -3,9 +3,9 @@ import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { isAllowedApiEndpoint } from '../server/endpointPolicy';
 import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
+import { stripDemoPrivateKeysFromEnvironment } from '../server/demoKeyEnv';
 
-delete process.env.ASGUARD_DEMO_NEAR_PRIVATE_KEY;
-delete process.env.ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY;
+stripDemoPrivateKeysFromEnvironment(process.env);
 
 function validateEndpoint(name: string, value: string): void {
   let endpoint: URL;
