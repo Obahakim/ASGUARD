@@ -13,7 +13,7 @@ import { validateEndpoint, validateNearAiEndpoint, validateNetwork, validatePort
 import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
-import { getNearRpcEndpoints } from '../server/aos/nearRpc';
+import { DEFAULT_TESTNET_NEAR_RPC_FAILOVER_URLS, getNearRpcEndpoints } from '../server/aos/nearRpc';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
 import { canOpenBrowser, getStackEndpoints } from './lib/devStack';
 import { offerPostSetupActions, openDashboard, startDevStack } from './lib/setupActions';
@@ -420,6 +420,9 @@ function prepareConfiguration(
   env.setValue('ASGUARD_NEAR_RPC_URL', !isUnsetValue(currentRpc) && knownRpc.includes(currentRpc || '')
     ? rpcDefault
     : validEndpointOrDefault('ASGUARD_NEAR_RPC_URL', currentRpc, rpcDefault));
+  if (isUnsetValue(env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'))) {
+    env.setValue('ASGUARD_NEAR_RPC_FAILOVER_URLS', network === 'testnet' ? DEFAULT_TESTNET_NEAR_RPC_FAILOVER_URLS.join(',') : '');
+  }
   const intentsUrl = validEndpointOrDefault(
     'ASGUARD_NEAR_INTENTS_API_URL', env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), intentsDefaults.apiUrl,
   );
@@ -562,9 +565,9 @@ function enableTidepoolWallet(env: EnvFile, log: (message: string) => void, rota
   log('WARNING: Tidepool settlement is testnet only. The key stays in local .env; the backend strips it from its process at startup. Never commit .env or use a mainnet key.');
 }
 
-function disableTidepoolWallet(env: EnvFile): void {
+function disableTidepoolWallet(env: EnvFile, tidepoolQuotes = false): void {
   const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
-  const defaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet');
+  const defaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet', tidepoolQuotes && network === 'testnet');
   env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
   env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
   env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
@@ -914,7 +917,7 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
         log(probe.available ? 'Tidepool testnet: reachable.' : `Tidepool testnet: not reachable right now (${probe.reason || 'could not reach the service'}); preparing the demo wallet anyway.`);
         enableTidepoolWallet(env, log, args.flags.has('force'));
       } else {
-        disableTidepoolWallet(env);
+        disableTidepoolWallet(env, env.getValue('ASGUARD_NEAR_NETWORK') === 'testnet');
       }
       if (!args.flags.has('reset-state') && !env.getValue('ASGUARD_STATE_DIR')?.trim()
         && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32

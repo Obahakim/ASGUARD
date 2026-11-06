@@ -68,8 +68,10 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
     const env = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
     assert.equal(env.getValue('ASGUARD_NEAR_NETWORK'), 'testnet');
     assert.equal(env.getValue('ASGUARD_STATE_DIR'), '.asguard/state');
-    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
-    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://www.usetidepool.tech');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'verifier.tidepool-sandbox.testnet');
+    assert.equal(env.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.testnet.fastnear.com');
+    assert.equal(env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'), 'https://rpc.testnet.near.org,https://near-testnet.drpc.org,https://neart.lava.build');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '', '');
@@ -273,8 +275,13 @@ test('--yes --on-chain-demo enables only a valid testnet wallet without exposing
     const privateKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'true');
     assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'true');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://www.usetidepool.tech');
+    assert.equal(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'verifier.tidepool-sandbox.testnet');
+    assert.equal(env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'), 'https://rpc.testnet.near.org,https://near-testnet.drpc.org,https://neart.lava.build');
     assert.equal(nearDemoKeyMatches(privateKey, accountId), true);
     assert.equal(streams.transcript.includes(privateKey), false);
+    assert.match(streams.transcript, /backend strips it from its process/);
+    assert.match(streams.transcript, /Never commit \.env/);
     assert.equal(streams.transcript.includes('Setup complete.'), true);
   } finally {
     streams.input.end();
@@ -377,7 +384,7 @@ test('check fails for placeholders, short tokens, mismatched keypairs, and non-H
   }
 });
 
-test('--yes applies official endpoint defaults and never retains a Tidepool demo wallet', () => {
+test('--yes applies judge-safe testnet endpoints and disables Tidepool settlement without the wallet option', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-safe-'));
   const envPath = path.join(directory, '.env');
   try {
@@ -395,8 +402,8 @@ test('--yes applies official endpoint defaults and never retains a Tidepool demo
     assert.equal(result.status, 0, result.stderr);
     const configured = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
     assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.testnet.fastnear.com');
-    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
-    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
+    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://www.usetidepool.tech');
+    assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'verifier.tidepool-sandbox.testnet');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '', '');

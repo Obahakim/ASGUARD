@@ -3,6 +3,12 @@ import { isAllowedApiEndpoint } from '../endpointPolicy';
 import { nearRpcDefault } from './nearIntentsConfig';
 import type { NearNetwork } from './nearAdapter';
 
+export const DEFAULT_TESTNET_NEAR_RPC_FAILOVER_URLS = [
+  'https://rpc.testnet.near.org',
+  'https://near-testnet.drpc.org',
+  'https://neart.lava.build',
+] as const;
+
 export interface NearRpcClientOptions {
   network: NearNetwork;
   primaryUrl?: string;

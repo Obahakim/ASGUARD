@@ -1,0 +1,90 @@
+name: Judge demos
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      on_chain_demo:
+        description: Run the optional capped Tidepool testnet settlement
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: judge-demos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  judge-demos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ASGUARD_JUDGE_ONCHAIN: ${{ github.event_name == 'workflow_dispatch' && inputs.on_chain_demo && 'true' || 'false' }}
+      ASGUARD_CI_ENV_PATH: .env.ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Generate isolated testnet configuration
+        run: |
+          if [ "$ASGUARD_JUDGE_ONCHAIN" = "true" ]; then
+            npm run ci:bootstrap:onchain
+          else
+            npm run ci:bootstrap
+          fi
+      - name: Start backend
+        run: |
+          node --env-file=.env.ci --import tsx scripts/start-backend.ts > "$RUNNER_TEMP/asguard-backend.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/asguard-backend.pid"
+      - name: Wait for backend
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          const env = Object.fromEntries(fs.readFileSync('.env.ci', 'utf8').split(/\r?\n/).flatMap((line) => {
+            const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+            return match ? [[match[1], match[2]]] : [];
+          }));
+          const credentials = JSON.parse(env.ASGUARD_API_CREDENTIALS);
+          const operator = credentials.find((item) => item.roles?.includes('admin'))?.token;
+          if (!operator) throw new Error('Generated operator credentials are missing.');
+          const endpoint = `${env.ASGUARD_API_URL}/api/policy`;
+          const deadline = Date.now() + 90_000;
+          while (Date.now() < deadline) {
+            try {
+              const response = await fetch(endpoint, { headers: { authorization: ['Bearer', operator].join(' ') }, signal: AbortSignal.timeout(3_000) });
+              if (response.ok) {
+                console.log('Backend is ready.');
+                process.exit(0);
+              }
+            } catch {}
+            await delay(1_000);
+          }
+          console.error('Backend did not become ready. Check the backend startup step and runner logs.');
+          process.exit(1);
+          NODE
+      - name: Run judge scenarios
+        run: npm run ci:judge-demos
+      - name: Stop backend
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/asguard-backend.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/asguard-backend.pid")" 2>/dev/null || true
+          fi
+      - name: Upload redacted logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asguard-judge-demo-logs
+          path: |
+            .asguard-ci-logs/
+          if-no-files-found: warn
+          retention-days: 14
