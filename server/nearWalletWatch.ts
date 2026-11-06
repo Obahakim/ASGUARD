@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { NearRpcClient } from './aos/nearRpc';
 import { nearAdapter, type NearNetwork } from './aos/nearAdapter';
-import { isAllowedApiEndpoint } from './endpointPolicy';
 import { resolveStatePath } from './stateDir';
 
 export type WatchedNearNetwork = `near:${NearNetwork}`;
@@ -259,6 +259,7 @@ export class NearWalletWatcher {
   private readonly rpc: RpcFunction;
   private readonly audit: AuditFunction;
   private readonly onActivity?: (activity: WatchedNearActivity) => void;
+  private readonly rpcClients = new Map<WatchedNearNetwork, NearRpcClient>();
   private timer?: NodeJS.Timeout;
   private lastSuccessAt?: string;
   private lastError?: string;
@@ -282,23 +283,23 @@ export class NearWalletWatcher {
 
   private async requestRpc(network: WatchedNearNetwork, method: string, params: Record<string, unknown>): Promise<unknown> {
     const networkName = network.slice(5) as NearNetwork;
-    const endpoint = networkName === nearAdapter.network ? nearAdapter.rpcUrl : `https://rpc.${networkName}.near.org`;
-    const url = new URL(endpoint);
-    if (!isAllowedApiEndpoint(url)) throw new Error('Wallet watch RPC must use HTTPS.');
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
-    try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 'asguard-wallet-watch', method, params }), signal: controller.signal });
-      if (!response.ok) throw new Error(`NEAR RPC returned HTTP ${response.status}.`);
-      const body = await response.json() as { result?: unknown; error?: { message?: string } };
-      if (body.error || body.result === undefined) throw new Error(body.error?.message ?? 'NEAR RPC returned an invalid response.');
-      return body.result;
-    } finally { clearTimeout(timeout); }
+    let client = this.rpcClients.get(network);
+    if (!client) {
+      client = new NearRpcClient({
+        network: networkName,
+        primaryUrl: networkName === nearAdapter.network ? nearAdapter.rpcUrl : undefined,
+      });
+      this.rpcClients.set(network, client);
+    }
+    const body = await client.request<unknown>(method, params, 'asguard-wallet-watch');
+    if (body.error || body.result === undefined) throw new Error(body.error?.message ?? 'NEAR RPC returned an invalid response.');
+    return body.result;
   }
 
   async pollOnce(): Promise<void> {
     const groups = this.store.activeByNetwork();
+    const previousError = this.lastError;
+    this.lastError = undefined;
     let succeeded = true;
     for (const [network, wallets] of groups) {
       try { await this.pollNetwork(network, wallets); }
@@ -311,11 +312,13 @@ export class NearWalletWatcher {
     }
     if (succeeded) {
       this.lastSuccessAt = new Date().toISOString();
-      const recoveredError = this.lastError;
-      if (recoveredError) this.emitAudit('wallet_watch_recovered', { previous_error: recoveredError });
-      this.failures = this.lastError ? this.failures + 1 : 0;
-      if (!this.lastError) this.nextRetryAt = undefined;
-      else this.nextRetryAt = new Date(Date.now() + Math.min(this.intervalMs * 2 ** Math.min(this.failures, 5), 300_000)).toISOString();
+      this.failures = 0;
+      this.nextRetryAt = undefined;
+      if (previousError) this.emitAudit('wallet_watch_recovered', { previous_error: previousError });
+      if (this.lastError) {
+        this.failures = 1;
+        this.nextRetryAt = new Date(Date.now() + Math.min(this.intervalMs * 2, 300_000)).toISOString();
+      }
     } else {
       this.failures += 1;
       const delay = Math.min(this.intervalMs * 2 ** Math.min(this.failures, 5), 300_000);

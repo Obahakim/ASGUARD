@@ -1,6 +1,7 @@
 import type { ChainHealth } from './chainHealth';
 import { isAllowedApiEndpoint } from '../endpointPolicy';
-import { nearIntentsDefaults } from './nearIntentsConfig';
+import { nearIntentsDefaults, nearRpcDefault } from './nearIntentsConfig';
+import { getNearRpcEndpoints, NearRpcClient } from './nearRpc';
 
 export type NearNetwork = 'mainnet' | 'testnet';
 
@@ -18,6 +19,7 @@ export class NearAdapter {
   readonly intentsApiUrl: string;
   readonly intentsVerifier: string;
   readonly chainSignaturesContract: string;
+  private readonly rpc: NearRpcClient;
 
   constructor(config: {
     network?: string;
@@ -25,38 +27,38 @@ export class NearAdapter {
     intentsApiUrl?: string;
     intentsVerifier?: string;
     chainSignaturesContract?: string;
+    rpcFetchImpl?: typeof fetch;
+    rpcRetryWait?: (milliseconds: number) => Promise<void>;
+    rpcFailoverUrls?: string | string[];
   } = {}) {
     const network = config.network ?? process.env.ASGUARD_NEAR_NETWORK ?? 'testnet';
     if (network !== 'mainnet' && network !== 'testnet') {
       throw new Error('ASGUARD_NEAR_NETWORK must be mainnet or testnet.');
     }
     this.network = network;
-    this.rpcUrl = config.rpcUrl ?? process.env.ASGUARD_NEAR_RPC_URL ?? `https://rpc.${network}.near.org`;
+    const configuredNetwork = process.env.ASGUARD_NEAR_NETWORK || 'testnet';
+    const environmentRpcUrl = network === configuredNetwork ? process.env.ASGUARD_NEAR_RPC_URL : undefined;
+    this.rpcUrl = config.rpcUrl ?? environmentRpcUrl ?? nearRpcDefault(network);
     const intentsDefaults = nearIntentsDefaults(network);
     this.intentsApiUrl = config.intentsApiUrl ?? process.env.ASGUARD_NEAR_INTENTS_API_URL ?? intentsDefaults.apiUrl;
     this.intentsVerifier = config.intentsVerifier ?? process.env.ASGUARD_NEAR_INTENTS_VERIFIER ?? intentsDefaults.verifier;
     this.chainSignaturesContract = config.chainSignaturesContract ?? process.env.ASGUARD_NEAR_CHAIN_SIGNATURES_CONTRACT
       ?? (network === 'mainnet' ? 'v1.signer' : 'v1.signer-prod.testnet');
-    for (const endpoint of [this.rpcUrl, this.intentsApiUrl]) {
+    for (const endpoint of [this.rpcUrl, this.intentsApiUrl, ...getNearRpcEndpoints(network, this.rpcUrl, config.rpcFailoverUrls).slice(1)]) {
       const url = new URL(endpoint);
       if (!isAllowedApiEndpoint(url)) {
         throw new Error('NEAR endpoints must use HTTPS unless they are loopback development endpoints.');
       }
     }
+    this.rpc = new NearRpcClient({
+      network, primaryUrl: this.rpcUrl, failoverUrls: config.rpcFailoverUrls,
+      fetchImpl: config.rpcFetchImpl, wait: config.rpcRetryWait,
+    });
   }
 
   async health(): Promise<ChainHealth> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
-      const response = await fetch(this.rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 'asguard-health', method: 'status', params: [] }),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`NEAR RPC returned HTTP ${response.status}.`);
-      const body = await response.json() as { result?: { chain_id?: string; sync_info?: { latest_block_height?: number } }; error?: { message?: string } };
+      const body = await this.rpc.request<{ chain_id?: string; sync_info?: { latest_block_height?: number } }>('status', [], 'asguard-health');
       if (body.error || typeof body.result?.sync_info?.latest_block_height !== 'number') {
         throw new Error(body.error?.message ?? 'NEAR RPC returned an invalid status response.');
       }
@@ -64,35 +66,17 @@ export class NearAdapter {
       return { chain: this.chain, network: this.network, healthy: true };
     } catch (error) {
       return { chain: this.chain, network: this.network, healthy: false, error: error instanceof Error ? error.message : 'NEAR RPC health check failed.' };
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
   async getFinalizedTransaction(txHash: string, senderAccountId: string): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
-    try {
-      const response = await fetch(this.rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 'asguard-submission-report',
-          method: 'tx',
-          params: { tx_hash: txHash, sender_account_id: senderAccountId, wait_until: 'FINAL' },
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`NEAR RPC returned HTTP ${response.status}.`);
-      const body = await response.json() as { result?: unknown; error?: { message?: string } };
-      if (body.error || !body.result || typeof body.result !== 'object') {
-        throw new Error(body.error?.message ?? 'NEAR RPC returned no transaction result.');
-      }
-      return body.result;
-    } finally {
-      clearTimeout(timeout);
+    const body = await this.rpc.request<unknown>('tx', {
+      tx_hash: txHash, sender_account_id: senderAccountId, wait_until: 'FINAL',
+    }, 'asguard-submission-report');
+    if (body.error || !body.result || typeof body.result !== 'object') {
+      throw new Error(body.error?.message ?? 'NEAR RPC returned no transaction result.');
     }
+    return body.result;
   }
 
   async estimateUsdValue(assetId: string, amountInSmallestUnit: string, now = Date.now()): Promise<number | undefined> {

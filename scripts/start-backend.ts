@@ -2,7 +2,7 @@ import { getAuditSigningKey } from '../server/auditConfig';
 import { validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { isAllowedApiEndpoint } from '../server/endpointPolicy';
-import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
+import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
 import { stripDemoPrivateKeysFromEnvironment } from '../server/demoKeyEnv';
 import path from 'node:path';
 
@@ -47,7 +47,7 @@ async function start(): Promise<void> {
     if (network !== 'mainnet' && network !== 'testnet') {
       throw new Error('ASGUARD_NEAR_NETWORK must be mainnet or testnet; use testnet for local demos.');
     }
-    validateEndpoint('ASGUARD_NEAR_RPC_URL', process.env.ASGUARD_NEAR_RPC_URL || `https://rpc.${network}.near.org`);
+    validateEndpoint('ASGUARD_NEAR_RPC_URL', process.env.ASGUARD_NEAR_RPC_URL || nearRpcDefault(network));
     validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', process.env.ASGUARD_NEAR_INTENTS_API_URL || nearIntentsDefaults(network).apiUrl);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

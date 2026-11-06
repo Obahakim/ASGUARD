@@ -13,6 +13,7 @@ import { validateEndpoint, validateNearAiEndpoint, validateNetwork, validatePort
 import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attestationConfig';
 import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
+import { getNearRpcEndpoints } from '../server/aos/nearRpc';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
 import { canOpenBrowser, getStackEndpoints } from './lib/devStack';
 import { offerPostSetupActions, openDashboard, startDevStack } from './lib/setupActions';
@@ -49,6 +50,17 @@ const projectRoot = path.resolve(__dirname, '..');
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown configuration error.';
+}
+
+function warnForNearOrgRpc(endpoint: string, log: (message: string) => void): void {
+  try {
+    const hostname = new URL(endpoint).hostname.toLowerCase();
+    if (hostname === 'near.org' || hostname.endsWith('.near.org')) {
+      log('Warning: this NEAR RPC uses a near.org endpoint, which may be rate-limited. Consider FastNear or a dedicated RPC provider.');
+    }
+  } catch {
+    return;
+  }
 }
 
 function masked(value: string): string {
@@ -227,7 +239,8 @@ function checkConfiguration(envPath: string, log: (message: string) => void = co
     publicPath: env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH'),
     port: env.getValue('ASGUARD_PORT') || '8080',
     network,
-    rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || `https://rpc.${network}.near.org`,
+    rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || nearRpcDefault(network === 'mainnet' ? 'mainnet' : 'testnet'),
+    rpcFailovers: env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'),
     intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || intentsDefaults.apiUrl,
   };
   let passed = true;
@@ -247,7 +260,11 @@ function checkConfiguration(envPath: string, log: (message: string) => void = co
   run('port', () => validatePort(values.port));
   run('NEAR network', () => validateNetwork(values.network));
   run('NEAR RPC endpoint', () => validateEndpoint('ASGUARD_NEAR_RPC_URL', values.rpcUrl));
+  run('NEAR RPC failover endpoints', () => {
+    getNearRpcEndpoints(network === 'mainnet' ? 'mainnet' : 'testnet', values.rpcUrl, values.rpcFailovers);
+  });
   run('NEAR Intents endpoint', () => validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', values.intentsUrl));
+  warnForNearOrgRpc(values.rpcUrl, log);
   if (passed && values.publicPath) {
     const publicKey = getApprovalPublicKey(values.publicPath);
     const fingerprint = createHash('sha256').update(publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
@@ -398,7 +415,7 @@ function prepareConfiguration(
 
   const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
   const currentRpc = env.getValue('ASGUARD_NEAR_RPC_URL');
-  const knownRpc = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
+  const knownRpc = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org', nearRpcDefault('testnet')];
   env.setValue('ASGUARD_NEAR_RPC_URL', !isUnsetValue(currentRpc) && knownRpc.includes(currentRpc || '')
     ? rpcDefault
     : validEndpointOrDefault('ASGUARD_NEAR_RPC_URL', currentRpc, rpcDefault));
@@ -474,6 +491,12 @@ function commitConfiguration(
     rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || '',
     intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '',
   });
+  getNearRpcEndpoints(
+    env.getValue('ASGUARD_NEAR_NETWORK') === 'mainnet' ? 'mainnet' : 'testnet',
+    env.getValue('ASGUARD_NEAR_RPC_URL'),
+    env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'),
+  );
+  warnForNearOrgRpc(env.getValue('ASGUARD_NEAR_RPC_URL') || '', log);
   const changed = writeEnvFile(envPath, env);
   verifyNodeEnvFile(envPath, prepared.credentials, prepared.auditKey);
   const tokenPath = path.join(projectDirectory, '.asguard', 'dashboard-token.txt');
@@ -498,6 +521,11 @@ function configurationIsValid(env: EnvFile, projectDirectory: string): boolean {
     validatePort(env.getValue('ASGUARD_PORT') || '');
     validateNetwork(env.getValue('ASGUARD_NEAR_NETWORK') || '');
     validateEndpoint('ASGUARD_NEAR_RPC_URL', env.getValue('ASGUARD_NEAR_RPC_URL') || '');
+    getNearRpcEndpoints(
+      env.getValue('ASGUARD_NEAR_NETWORK') === 'mainnet' ? 'mainnet' : 'testnet',
+      env.getValue('ASGUARD_NEAR_RPC_URL'),
+      env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS'),
+    );
     validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '');
     for (const name of ['ASGUARD_HOST', 'ASGUARD_ALLOWED_ORIGINS', 'ASGUARD_API_URL', 'NEXT_PUBLIC_ASGUARD_API_URL',
       'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT']) {
@@ -591,7 +619,7 @@ async function configureAdvanced(
   }
 
   const currentNetwork = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
-  log(`Current network: ${currentNetwork}; RPC: ${env.getValue('ASGUARD_NEAR_RPC_URL') || '(default)'}; Intents API: ${env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '(default)'}.`);
+  log(`Current network: ${currentNetwork}; RPC: ${env.getValue('ASGUARD_NEAR_RPC_URL') || '(default)'}; failovers: ${env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS') || '(none)'}; Intents API: ${env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '(default)'}.`);
   if (await prompter.confirm('Configure network and endpoints?', false)) {
     const networkChoice = await prompter.choose('NEAR network:', ['testnet', 'mainnet'], { defaultIndex: currentNetwork === 'mainnet' ? 1 : 0 });
     if (networkChoice === 'mainnet') {
@@ -613,7 +641,15 @@ async function configureAdvanced(
         try { validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', value); return undefined; } catch (error) { return safeError(error); }
       },
     });
+    const rpcFailovers = await prompter.ask('ASGUARD_NEAR_RPC_FAILOVER_URLS', {
+      default: env.getValue('ASGUARD_NEAR_RPC_FAILOVER_URLS') || '',
+      validate: (value) => {
+        try { getNearRpcEndpoints(network as 'testnet' | 'mainnet', rpc, value); return undefined; }
+        catch (error) { return safeError(error); }
+      },
+    });
     env.setValue('ASGUARD_NEAR_RPC_URL', rpc);
+    env.setValue('ASGUARD_NEAR_RPC_FAILOVER_URLS', rpcFailovers);
     env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsUrl);
     env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', nearIntentsDefaults(
       network as 'testnet' | 'mainnet', intentsUrl === 'https://www.usetidepool.tech',
@@ -858,7 +894,8 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
   const keysToReport = [
     'ASGUARD_API_CREDENTIALS', 'ASGUARD_AUDIT_KEY', 'ASGUARD_ATTESTATION_PRIVATE_KEY_PATH',
     'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', 'ASGUARD_NEAR_NETWORK', 'ASGUARD_PORT',
-    'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER',
+    'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_RPC_FAILOVER_URLS',
+    'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER',
     'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT', 'ASGUARD_DEMO_TIDEPOOL_SETTLE', 'ASGUARD_DEMO_TIDEPOOL_FAUCET',
   ];
   const before = new Map(keysToReport.map((key) => [key, env.getValue(key)]));

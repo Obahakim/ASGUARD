@@ -27,7 +27,7 @@ test('wallet watch RPC accepts bracketed IPv6 loopback', async () => {
     const watcher = new NearWalletWatcher({ audit: () => undefined, rpc: async () => ({}) });
     const requestRpc = (watcher as unknown as { requestRpc: (network: 'near:testnet', method: string, params: Record<string, unknown>) => Promise<unknown> }).requestRpc;
     assert.deepEqual(await requestRpc.call(watcher, 'near:testnet', 'status', {}), { ok: true });
-    assert.equal(requested, 'http://[::1]:8080');
+    assert.equal(requested, 'http://[::1]:8080/');
   } finally {
     Object.defineProperty(nearAdapter, 'rpcUrl', { value: originalUrl, configurable: true });
     globalThis.fetch = originalFetch;
@@ -88,6 +88,7 @@ test('polls real NEAR RPC response shapes, records matching public transactions,
         throw new Error(`unexpected method ${method}`);
       },
     });
+
     await watcher.pollOnce();
     const observed = store.recentActivity({ watch_id: wallet.id });
     assert.equal(observed.length, 1);
@@ -102,4 +103,45 @@ test('polls real NEAR RPC response shapes, records matching public transactions,
     assert.match(failing.status().last_error ?? '', /RPC unavailable/);
     assert.ok(auditTypes.includes('wallet_watch_error'));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('successful wallet-watch polls clear the previous error and reset retry backoff', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-watch-recovery-'));
+  try {
+    const store = new NearWalletWatchStore(path.join(directory, 'watches.json'));
+    store.register({ agent_id: 'watch-agent', account_id: 'bot.near', network: 'near:testnet' });
+    let failing = true;
+    const watcher = new NearWalletWatcher({
+      store,
+      intervalMs: 5_000,
+      audit: () => undefined,
+      rpc: async (_network, method) => {
+        if (failing) throw new Error('RPC throttled');
+        if (method === 'status') return { chain_id: 'testnet' };
+        if (method === 'block') return { header: { height: 0 }, chunks: [] };
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+
+    await watcher.pollOnce();
+    const firstRetry = Date.parse(watcher.status().next_retry_at || '');
+    assert.equal(watcher.status().healthy, false);
+    assert.ok(watcher.status().last_error);
+
+    failing = false;
+    await watcher.pollOnce();
+    assert.equal(watcher.status().healthy, true);
+    assert.equal(watcher.status().last_error, undefined);
+    assert.equal(watcher.status().next_retry_at, undefined);
+
+    failing = true;
+    await watcher.pollOnce();
+    const secondRetry = Date.parse(watcher.status().next_retry_at || '');
+    assert.equal(watcher.status().healthy, false);
+    assert.ok(secondRetry > Date.now());
+    assert.ok(Math.abs((secondRetry - Date.now()) - 10_000) < 2_000);
+    assert.ok(Math.abs((firstRetry - Date.now()) - 10_000) < 2_000);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

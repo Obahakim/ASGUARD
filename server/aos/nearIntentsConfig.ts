@@ -4,7 +4,7 @@ export interface NearIntentsDefaults {
 }
 
 export function nearRpcDefault(network: 'testnet' | 'mainnet'): string {
-  return `https://rpc.${network}.near.org`;
+  return network === 'testnet' ? 'https://rpc.fastnear.com' : 'https://rpc.mainnet.near.org';
 }
 
 export function nearIntentsDefaults(network: 'testnet' | 'mainnet', tidepoolDemoEnabled = false): NearIntentsDefaults {

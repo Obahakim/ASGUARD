@@ -3,10 +3,50 @@ import assert from 'node:assert/strict';
 
 import { NearAdapter } from './nearAdapter';
 
+test('NEAR adapter defaults to FastNear for testnet and preserves configured overrides', () => {
+  const originalNetwork = process.env.ASGUARD_NEAR_NETWORK;
+  const original = process.env.ASGUARD_NEAR_RPC_URL;
+  try {
+    process.env.ASGUARD_NEAR_NETWORK = 'testnet';
+    delete process.env.ASGUARD_NEAR_RPC_URL;
+    assert.equal(new NearAdapter({ network: 'testnet' }).rpcUrl, 'https://rpc.fastnear.com');
+    process.env.ASGUARD_NEAR_RPC_URL = 'https://override.example/rpc';
+    assert.equal(new NearAdapter({ network: 'testnet' }).rpcUrl, 'https://override.example/rpc');
+    assert.equal(new NearAdapter({ network: 'testnet', rpcUrl: 'https://custom.example/rpc' }).rpcUrl, 'https://custom.example/rpc');
+  } finally {
+    if (originalNetwork === undefined) delete process.env.ASGUARD_NEAR_NETWORK;
+    else process.env.ASGUARD_NEAR_NETWORK = originalNetwork;
+    if (original === undefined) delete process.env.ASGUARD_NEAR_RPC_URL;
+    else process.env.ASGUARD_NEAR_RPC_URL = original;
+  }
+});
+
 test('NEAR adapter accepts bracketed IPv6 loopback for local endpoints', () => {
   const adapter = new NearAdapter({ network: 'testnet', rpcUrl: 'http://[::1]:8080', intentsApiUrl: 'https://intents.example' });
   assert.equal(adapter.rpcUrl, 'http://[::1]:8080');
   assert.throws(() => new NearAdapter({ network: 'testnet', rpcUrl: 'http://example.com' }), /NEAR endpoints must use HTTPS unless they are loopback development endpoints/);
+});
+
+test('NEAR health rotates to a failover RPC after 429 and honors Retry-After', async () => {
+  const requested: string[] = [];
+  const waits: number[] = [];
+  const responses = [
+    new Response('', { status: 429, headers: { 'retry-after': '1' } }),
+    Response.json({ result: { chain_id: 'testnet', sync_info: { latest_block_height: 10 } } }),
+  ];
+  const adapter = new NearAdapter({
+    network: 'testnet',
+    rpcUrl: 'https://primary.example',
+    rpcFailoverUrls: ['https://fallback.example'],
+    rpcFetchImpl: async (url) => {
+      requested.push(String(url));
+      return responses.shift()!;
+    },
+    rpcRetryWait: async (milliseconds) => { waits.push(milliseconds); },
+  });
+  assert.equal((await adapter.health()).healthy, true);
+  assert.deepEqual(requested, ['https://primary.example/', 'https://fallback.example/']);
+  assert.deepEqual(waits, [1_000]);
 });
 
 test('NEAR token valuation rounds spend upward and rejects stale prices', async () => {

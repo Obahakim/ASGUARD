@@ -309,6 +309,16 @@ test('check fails for placeholders, short tokens, mismatched keypairs, and non-H
       fs.writeFileSync(file, text);
       assert.equal(runSetup(['--check', '--env', file]).status, 1);
     }
+    const validFile = path.join(directory, 'valid.env');
+    fs.writeFileSync(validFile, contents());
+    const checked = runSetup(['--check', '--env', validFile]);
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.match(checked.stdout, /Warning: this NEAR RPC uses a near\.org endpoint/);
+
+    fs.writeFileSync(validFile, contents({
+      ASGUARD_NEAR_RPC_FAILOVER_URLS: 'http://remote.example',
+    }));
+    assert.equal(runSetup(['--check', '--env', validFile]).status, 1);
     assert.equal(spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry], { cwd: root, encoding: 'utf8', shell: false }).status, 2);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -332,7 +342,7 @@ test('--yes applies official endpoint defaults and never retains a Tidepool demo
     const result = runSetup(['--yes', '--env', envPath, '--key-dir', path.join(directory, '.asguard')]);
     assert.equal(result.status, 0, result.stderr);
     const configured = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
-    assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.testnet.near.org');
+    assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.fastnear.com');
     assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
     assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');

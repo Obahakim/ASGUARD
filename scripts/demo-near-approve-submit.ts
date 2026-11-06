@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { withAsguardApproval } from '../agent-sdk/index';
 import { runDemo } from './demo-common';
+import { nearRpcDefault } from '../server/aos/nearIntentsConfig';
 
 interface NearApiModule {
   connect(config: { networkId: string; nodeUrl: string; keyStore: unknown }): Promise<{
@@ -80,7 +81,7 @@ if (process.env.ASGUARD_DEMO_SUBMIT !== 'true') {
     const nearApi = createRequire(`${process.cwd()}/package.json`)('near-api-js') as NearApiModule;
     const keyStore = new nearApi.keyStores.InMemoryKeyStore();
     await keyStore.setKey('testnet', accountId, nearApi.KeyPair.fromString(privateKey));
-    const near = await nearApi.connect({ networkId: 'testnet', nodeUrl: process.env.ASGUARD_NEAR_RPC_URL || 'https://rpc.testnet.near.org', keyStore });
+    const near = await nearApi.connect({ networkId: 'testnet', nodeUrl: process.env.ASGUARD_NEAR_RPC_URL || nearRpcDefault('testnet'), keyStore });
     const outcome = await (await near.account(accountId)).sendMoney(receiverId, amountYocto);
     const txHash = (outcome as { transaction?: { hash?: unknown } }).transaction?.hash;
     if (typeof txHash !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) {
