@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { nearAdapter, type NearNetwork } from './aos/nearAdapter';
 import { isAllowedApiEndpoint } from './endpointPolicy';
+import { resolveStatePath } from './stateDir';
 
 export type WatchedNearNetwork = `near:${NearNetwork}`;
 
@@ -88,7 +88,7 @@ export class NearWalletWatchStore {
   private wallets: WatchedNearWallet[] = [];
   private activity: WatchedNearActivity[] = [];
 
-  constructor(filePath = process.env.ASGUARD_WATCHED_WALLETS_PATH || path.join(os.homedir(), '.asguard', 'watched_wallets.json')) {
+  constructor(filePath = resolveStatePath('watched_wallets.json', 'ASGUARD_WATCHED_WALLETS_PATH')) {
     this.filePath = filePath;
     this.load();
   }

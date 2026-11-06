@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveStatePath } from './stateDir';
 
 export interface PersistedAgentProfile {
   agent_id: string;
@@ -24,7 +24,7 @@ export interface ProfilePersistence {
 export class JsonProfilePersistence implements ProfilePersistence {
   private readonly filePath: string;
 
-  constructor(filePath = process.env.ASGUARD_AGENT_PROFILES_PATH || path.join(os.homedir(), '.asguard', 'agent_profiles.json')) {
+  constructor(filePath = resolveStatePath('agent_profiles.json', 'ASGUARD_AGENT_PROFILES_PATH')) {
     this.filePath = filePath;
   }
 

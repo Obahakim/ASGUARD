@@ -4,8 +4,7 @@ import { parseApiCredentials } from '../server/auth';
 import { isAllowedApiEndpoint } from '../server/endpointPolicy';
 import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 import { stripDemoPrivateKeysFromEnvironment } from '../server/demoKeyEnv';
-
-stripDemoPrivateKeysFromEnvironment(process.env);
+import path from 'node:path';
 
 function validateEndpoint(name: string, value: string): void {
   let endpoint: URL;
@@ -19,7 +18,21 @@ function validateEndpoint(name: string, value: string): void {
   }
 }
 
+export function formatStartupError(error: unknown, port = process.env.ASGUARD_PORT || '8080'): string {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'ASGUARD_AUDIT_CHAIN_INTEGRITY') {
+    const chainPath = 'chainPath' in error && typeof error.chainPath === 'string' ? error.chainPath : 'unknown path';
+    return `ASGUARD cannot start: the audit chain at ${chainPath} was signed with a different ASGUARD_AUDIT_KEY.\nFix one of:\n  - restore the original audit key in .env, or\n  - archive the old chain and start fresh: npm run setup -- --reset-state`;
+  }
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+    const errorPort = 'port' in error && (typeof error.port === 'number' || typeof error.port === 'string')
+      ? String(error.port) : port;
+    return `Port ${errorPort} is already in use. If ASGUARD is already running, stop it with npm run stop; otherwise change ASGUARD_PORT in .env.`;
+  }
+  return error instanceof Error ? error.message : 'Unknown startup error.';
+}
+
 async function start(): Promise<void> {
+  stripDemoPrivateKeysFromEnvironment(process.env);
   try {
     parseApiCredentials();
     getAuditSigningKey();
@@ -52,7 +65,14 @@ async function start(): Promise<void> {
     return;
   }
 
-  await import('../server/index.js');
+  try {
+    await import('../server/index.js');
+  } catch (error) {
+    const message = formatStartupError(error);
+    console.error(message.startsWith('ASGUARD cannot start:') || message.startsWith('Port ')
+      ? message : `[ASGUARD startup] ${message}`);
+    process.exitCode = 1;
+  }
 }
 
-void start();
+if (path.resolve(process.argv[1] || '') === path.resolve(__filename)) void start();

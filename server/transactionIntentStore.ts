@@ -1,12 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import type { TransactionIntent, TransactionIntentStatus, TransactionPreflight } from './types';
 import type { IntelligenceResult } from './intelligence';
+import { resolveStatePath } from './stateDir';
 
 const intents = new Map<string, TransactionIntent>();
-const intentFile = process.env.ASGUARD_TRANSACTION_INTENTS_PATH || path.join(os.homedir(), '.asguard', 'transaction_intents.json');
+const intentFile = resolveStatePath('transaction_intents.json', 'ASGUARD_TRANSACTION_INTENTS_PATH');
 
 function persistLocalIntents(): void {
   const directory = path.dirname(intentFile);

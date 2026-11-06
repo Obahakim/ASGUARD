@@ -5,9 +5,9 @@
 
 import fs from 'fs';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'path';
 import { AsguardPolicy } from './types';
+import { resolveStatePath } from './stateDir';
 
 const MUTABLE_FIELDS = new Set<keyof AsguardPolicy>([
   'max_auto_trade_usd', 'strict_anomaly_detection', 'device_ip_lock', 'remote_trigger_protection',
@@ -58,9 +58,7 @@ export class PolicyStore {
   private watchers: ((policy: AsguardPolicy) => void)[] = [];
 
   constructor(policyPath?: string) {
-    // Resolve to ~/.asguard/asguard_policy.json on the current platform.
-    const dataDir = path.join(os.homedir(), '.asguard');
-    this.policyPath = policyPath ?? path.join(dataDir, 'asguard_policy.json');
+    this.policyPath = policyPath ?? resolveStatePath('asguard_policy.json', 'ASGUARD_POLICY_PATH');
 
     // Initialize with default policy
     this.policy = this.getDefaultPolicy();

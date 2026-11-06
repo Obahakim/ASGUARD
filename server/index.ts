@@ -1062,7 +1062,7 @@ process.on('SIGINT', shutdown);
 // Start server
 httpServer.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EADDRINUSE') {
-    console.error(`[ASGUARD startup] Port ${PORT} is already in use. Another backend may be running; stop it before starting a second instance.`);
+    console.error(`Port ${PORT} is already in use. If ASGUARD is already running, stop it with npm run stop; otherwise change ASGUARD_PORT in .env.`);
   } else {
     console.error('[ASGUARD startup] HTTP server failed to listen.', error);
   }

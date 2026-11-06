@@ -14,19 +14,31 @@ import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
 import { offerPostSetupActions } from './lib/setupActions';
+import { AuditChain } from '../server/auditChain';
+import { resolveStatePath } from '../server/stateDir';
 
 const HELP = `ASGUARD server setup
 
-Usage: npm run setup [-- --yes|--check] [--force] [--env <path>] [--key-dir <path>] [--no-color]
+Usage: npm run setup [-- --yes|--check] [--force] [--reset-state] [--env <path>] [--key-dir <path>] [--no-color]
   --yes       Fill missing values using safe testnet defaults without prompting
   --check     Validate the existing configuration without writing
   --force     Regenerate secrets, preserving existing files as backups
+  --reset-state Archive existing state files before starting fresh
   --env       Environment file path (default .env)
   --key-dir   Attestation-key directory (default .asguard)
   --no-color  Disable ANSI color
   --help      Show this help
 `;
 const accountPattern = /^[a-z0-9]+(?:[-_.][a-z0-9]+)*$/;
+const stateFiles = [
+  ['audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH'],
+  ['transaction_intents.json', 'ASGUARD_TRANSACTION_INTENTS_PATH'],
+  ['agent_profiles.json', 'ASGUARD_AGENT_PROFILES_PATH'],
+  ['watched_wallets.json', 'ASGUARD_WATCHED_WALLETS_PATH'],
+  ['asguard_policy.json', 'ASGUARD_POLICY_PATH'],
+] as const;
+const stateEnvironmentNames = ['ASGUARD_STATE_DIR', ...stateFiles.map(([, variable]) => variable), 'ASGUARD_AUDIT_KEY'];
+const projectRoot = path.resolve(__dirname, '..');
 type Status = 'generated' | 'kept' | 'set' | 'skipped' | 'unchanged';
 
 function safeError(error: unknown): string {
@@ -97,6 +109,88 @@ function uniqueSecret(used: string[]): string {
   return value;
 }
 
+function withEnvState<T>(env: EnvFile, operation: () => T): T {
+  const previous = new Map(stateEnvironmentNames.map((name) => [name, process.env[name]]));
+  for (const name of stateEnvironmentNames) {
+    const value = env.getValue(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  try {
+    return operation();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+function localStateDirectory(): string {
+  return path.join(projectRoot, '.asguard', 'state');
+}
+
+function stateDirectory(env: EnvFile): string {
+  return withEnvState(env, () => path.dirname(resolveStatePath('audit_chain.json')));
+}
+
+function archiveFiles(paths: string[], directory: string, now = Date.now()): string[] {
+  const existing = [...new Set(paths.filter((filePath) => fs.existsSync(filePath)))];
+  if (!existing.length) return [];
+
+  const base = path.join(directory, `archive-${Math.floor(now / 1000)}`);
+  let archiveDirectory = base;
+  let suffix = 1;
+  while (fs.existsSync(archiveDirectory)) {
+    archiveDirectory = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  fs.mkdirSync(archiveDirectory, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') fs.chmodSync(archiveDirectory, 0o700);
+
+  const archived: string[] = [];
+  for (const source of existing) {
+    const destination = path.join(archiveDirectory, path.basename(source));
+    try {
+      fs.renameSync(source, destination);
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EXDEV')) throw error;
+      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+      if (fs.readFileSync(source).compare(fs.readFileSync(destination)) !== 0) {
+        fs.unlinkSync(destination);
+        throw new Error(`Could not verify archived state file ${path.basename(source)}.`);
+      }
+      fs.unlinkSync(source);
+    }
+    if (process.platform !== 'win32') fs.chmodSync(destination, 0o600);
+    archived.push(destination);
+  }
+  return archived;
+}
+
+function archiveAuditChainForKeyRotation(env: EnvFile): void {
+  const source = withEnvState(env, () => resolveStatePath('audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH'));
+  if (!env.getValue('ASGUARD_STATE_DIR')?.trim()) env.setValue('ASGUARD_STATE_DIR', '.asguard/state');
+  const destinationDirectory = stateDirectory(env);
+  archiveFiles([source], destinationDirectory);
+}
+
+function archiveAllState(env: EnvFile): string[] {
+  const sources = withEnvState(env, () => stateFiles.map(([fileName, variable]) => resolveStatePath(fileName, variable)));
+  const destinationDirectory = env.getValue('ASGUARD_STATE_DIR')?.trim()
+    ? stateDirectory(env)
+    : localStateDirectory();
+  const archived = archiveFiles(sources, destinationDirectory);
+  if (!env.getValue('ASGUARD_STATE_DIR')?.trim()) env.setValue('ASGUARD_STATE_DIR', '.asguard/state');
+  return archived;
+}
+
+function stateIntegrityCheck(env: EnvFile): void {
+  const chainPath = withEnvState(env, () => resolveStatePath('audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH'));
+  if (!fs.existsSync(chainPath)) return;
+  withEnvState(env, () => { new AuditChain(chainPath); });
+}
+
 function checkItem(name: string, operation: () => void): boolean {
   try {
     operation();
@@ -110,6 +204,8 @@ function checkItem(name: string, operation: () => void): boolean {
 
 function checkConfiguration(envPath: string): number {
   const env = readEnvFile(envPath);
+  const resolvedStateDirectory = stateDirectory(env);
+  console.log(`INFO state directory: ${resolvedStateDirectory}`);
   const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
   const intentsDefaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet');
   const values = {
@@ -131,6 +227,7 @@ function checkConfiguration(envPath: string): number {
   run('audit signing key', () => {
     if (isUnsetValue(values.auditKey) || Buffer.byteLength(values.auditKey || '', 'utf8') < 32) throw new Error('missing, placeholder, or shorter than 32 bytes');
   });
+  run('audit chain integrity', () => stateIntegrityCheck(env));
   run('attestation key pair', () => {
     if (isUnsetValue(values.privatePath) || isUnsetValue(values.publicPath)) throw new Error('missing or placeholder key path');
     validateApprovalKeyPair(values.privatePath, values.publicPath);
@@ -362,9 +459,22 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
   return 0;
 }
 
-async function interactive(env: EnvFile, envPath: string, keyDirectory: string, force: boolean, noColor: boolean): Promise<number> {
+async function interactive(
+  env: EnvFile,
+  envPath: string,
+  keyDirectory: string,
+  force: boolean,
+  noColor: boolean,
+  resetState: boolean,
+): Promise<number> {
   const prompter = createPrompter({ input: process.stdin, output: process.stdout, isTTY: Boolean(process.stdin.isTTY), noColor });
   let regenerate = force;
+  if (resetState) {
+    await prompter.confirmTyped('Type reset to archive existing state', 'reset');
+    const archived = archiveAllState(env);
+    writeEnvFile(envPath, env);
+    console.log(archived.length ? `Archived state files:\n${archived.join('\n')}` : 'No existing state files needed archiving.');
+  }
   if (fs.existsSync(envPath)) {
     console.log(`Existing environment file detected: ${envPath}`);
     if (force) await prompter.confirmTyped('Type regenerate to replace secrets', 'regenerate');
@@ -397,7 +507,8 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   secrets.push(runtime.value);
   const dashboard = await collectSecret(prompter, 'dashboard token', regenerate ? undefined : current.dashboard, secrets);
   secrets.push(dashboard.value);
-  const oldAudit = regenerate || isUnsetValue(env.getValue('ASGUARD_AUDIT_KEY')) ? undefined : env.getValue('ASGUARD_AUDIT_KEY');
+  const originalAudit = env.getValue('ASGUARD_AUDIT_KEY');
+  const oldAudit = regenerate || isUnsetValue(originalAudit) ? undefined : originalAudit;
   const audit = await collectSecret(prompter, 'audit key', oldAudit, secrets);
   const credentials = JSON.stringify([
     { id: 'runtime-local', token: runtime.value, roles: ['runtime'] },
@@ -405,6 +516,11 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   ]);
   env.setValue('ASGUARD_API_CREDENTIALS', credentials);
   env.setValue('ASGUARD_AUDIT_KEY', audit.value);
+  if (originalAudit !== audit.value && !resetState) archiveAuditChainForKeyRotation(env);
+  else if (!env.getValue('ASGUARD_STATE_DIR')?.trim()
+    && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32) {
+    console.log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
+  }
   const outputActions = [
     await secretOutput(prompter, 'dashboard token', dashboard.value, path.join(keyDirectory, 'dashboard-token.txt')),
     await secretOutput(prompter, 'runtime token', runtime.value),
@@ -514,9 +630,10 @@ function verifyNodeEnvFile(filePath: string, credentials: string, auditKey: stri
 async function run(): Promise<number> {
   let args;
   try {
-    args = parseArgs(process.argv.slice(2), ['env', 'key-dir'], ['yes', 'check', 'force', 'no-color', 'help']);
+    args = parseArgs(process.argv.slice(2), ['env', 'key-dir'], ['yes', 'check', 'force', 'reset-state', 'no-color', 'help']);
     if (args.positionals.length) throw new Error(`Unexpected argument: ${args.positionals[0]}`);
     if (args.flags.has('yes') && args.flags.has('check')) throw new Error('--yes and --check cannot be combined.');
+    if (args.flags.has('check') && args.flags.has('reset-state')) throw new Error('--check and --reset-state cannot be combined.');
   } catch (error) {
     console.error(`[ASGUARD setup] ${safeError(error)}\n${HELP}`);
     return 2;
@@ -546,10 +663,17 @@ async function run(): Promise<number> {
       const runtimeToken = args.flags.has('force') || !oldCredentials.runtime ? uniqueSecret([]) : oldCredentials.runtime;
       const dashboardToken = args.flags.has('force') || !oldCredentials.dashboard
         ? uniqueSecret([runtimeToken]) : oldCredentials.dashboard;
-      const oldAudit = args.flags.has('force') ? undefined : env.getValue('ASGUARD_AUDIT_KEY');
+      const originalAudit = env.getValue('ASGUARD_AUDIT_KEY');
+      const oldAudit = args.flags.has('force') ? undefined : originalAudit;
       const auditKey = !oldAudit || isUnsetValue(oldAudit) || Buffer.byteLength(oldAudit, 'utf8') < 32
         || oldAudit === runtimeToken || oldAudit === dashboardToken
         ? uniqueSecret([runtimeToken, dashboardToken]) : oldAudit;
+      const archivedByReset = args.flags.has('reset-state') ? archiveAllState(env) : [];
+      if (originalAudit !== auditKey && !args.flags.has('reset-state')) archiveAuditChainForKeyRotation(env);
+      else if (!args.flags.has('reset-state') && !env.getValue('ASGUARD_STATE_DIR')?.trim()
+        && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32) {
+        console.log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
+      }
       const credentials = JSON.stringify([
         { id: 'runtime-local', token: runtimeToken, roles: ['runtime'] },
         { id: 'dashboard-local', token: dashboardToken, roles: ['admin', 'operator', 'auditor'] },
@@ -614,6 +738,7 @@ async function run(): Promise<number> {
       }
       console.log(`Attestation key pair: ${pairValid ? 'kept' : 'generated'}`);
       console.log(writeDashboardToken(path.join(keyDirectory, 'dashboard-token.txt'), dashboardToken));
+      if (archivedByReset.length) console.log(`Archived state files:\n${archivedByReset.join('\n')}`);
       console.log('Setup complete.');
       return 0;
     } catch (error) {
@@ -622,7 +747,7 @@ async function run(): Promise<number> {
     }
   }
   try {
-    return await interactive(env, envPath, keyDirectory, args.flags.has('force'), args.flags.has('no-color'));
+    return await interactive(env, envPath, keyDirectory, args.flags.has('force'), args.flags.has('no-color'), args.flags.has('reset-state'));
   } catch (error) {
     const code = error && typeof error === 'object' && 'exitCode' in error ? Number(error.exitCode) : 1;
     if (code !== 130) console.error(`[ASGUARD setup] ${safeError(error)}`);

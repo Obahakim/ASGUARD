@@ -2,9 +2,18 @@ import { AuditChainEntry } from './types';
 import { logger } from './logger';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { getAuditSigningKey } from './auditConfig';
+import { resolveStatePath } from './stateDir';
+
+export class AuditChainIntegrityError extends Error {
+  readonly code = 'ASGUARD_AUDIT_CHAIN_INTEGRITY';
+
+  constructor(public readonly chainPath: string) {
+    super('Audit chain integrity check failed during startup.');
+    this.name = 'AuditChainIntegrityError';
+  }
+}
 
 /**
  * AuditChain maintains cryptographically signed, chain-linked audit logs
@@ -18,10 +27,10 @@ export class AuditChain {
 
   constructor(chainFilePath?: string) {
     this.signingKey = getAuditSigningKey();
-    this.chainFile = chainFilePath || process.env.ASGUARD_AUDIT_CHAIN_PATH || path.join(os.homedir(), '.asguard', 'audit_chain.json');
+    this.chainFile = chainFilePath || resolveStatePath('audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH');
     this.loadChain();
     if (!this.verifyChainIntegrity()) {
-      throw new Error('Audit chain integrity check failed during startup.');
+      throw new AuditChainIntegrityError(this.chainFile);
     }
   }
 
