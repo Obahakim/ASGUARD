@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 import { createPrompter, type Prompter } from './lib/prompt';
 import { parseArgs } from './lib/args';
 import { EnvFile, isUnsetValue, readEnvFile, writeEnvFile } from './lib/envFile';
@@ -13,17 +14,22 @@ import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attesta
 import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
-import { offerPostSetupActions } from './lib/setupActions';
+import { openDashboard, startDevStack } from './lib/setupActions';
 import { AuditChain } from '../server/auditChain';
 import { resolveStatePath } from '../server/stateDir';
+import { probeTidepool } from './lib/tidepoolProbe';
 
 const HELP = `ASGUARD server setup
 
-Usage: npm run setup [-- --yes|--check] [--force] [--reset-state] [--env <path>] [--key-dir <path>] [--no-color]
+Usage: npm run setup [-- --yes|--check] [--force] [--reset-state] [--advanced] [--on-chain-demo] [--start] [--open] [--env <path>] [--key-dir <path>] [--no-color]
   --yes       Fill missing values using safe testnet defaults without prompting
   --check     Validate the existing configuration without writing
   --force     Regenerate secrets, preserving existing files as backups
   --reset-state Archive existing state files before starting fresh
+  --advanced  Open optional endpoint, AI, webhook, and demo settings
+  --on-chain-demo  Prepare a Tidepool testnet wallet without prompting
+  --start     Start the local development stack after setup
+  --open      Start the stack and open the dashboard when available
   --env       Environment file path (default .env)
   --key-dir   Attestation-key directory (default .asguard)
   --no-color  Disable ANSI color
@@ -39,7 +45,6 @@ const stateFiles = [
 ] as const;
 const stateEnvironmentNames = ['ASGUARD_STATE_DIR', ...stateFiles.map(([, variable]) => variable), 'ASGUARD_AUDIT_KEY'];
 const projectRoot = path.resolve(__dirname, '..');
-type Status = 'generated' | 'kept' | 'set' | 'skipped' | 'unchanged';
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown configuration error.';
@@ -54,8 +59,8 @@ function nodeVersionValid(): boolean {
   return major > 20 || (major === 20 && minor >= 9);
 }
 
-function relativePosix(filePath: string): string {
-  return path.relative(process.cwd(), filePath).split(path.sep).join('/') || '.';
+function relativePosix(filePath: string, root = process.cwd()): string {
+  return path.relative(root, filePath).split(path.sep).join('/') || '.';
 }
 
 function keyPaths(directory: string): { privatePath: string; publicPath: string } {
@@ -79,28 +84,34 @@ function backupFile(filePath: string): void {
   fs.unlinkSync(filePath);
 }
 
-function writeDashboardToken(filePath: string, token: string): string {
+function writeDashboardToken(
+  filePath: string,
+  token: string,
+  allowRotate = false,
+  log: (message: string) => void = console.log,
+): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   if (fs.existsSync(filePath)) {
-    if (fs.readFileSync(filePath, 'utf8') !== token) throw new Error('dashboard-token.txt already exists with a different token; remove it before rotating the dashboard token.');
+    if (fs.readFileSync(filePath, 'utf8') === token) {
+      if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
+      return filePath;
+    }
+    if (!allowRotate) throw new Error('dashboard-token.txt already exists with a different token; refusing to overwrite it because setup did not rotate the dashboard credentials.');
+    const temporaryPath = path.join(path.dirname(filePath), `.dashboard-token-${process.pid}-${randomUUID()}.tmp`);
+    try {
+      fs.writeFileSync(temporaryPath, token, { flag: 'wx', mode: 0o600 });
+      fs.renameSync(temporaryPath, filePath);
+      if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
+    } catch (error) {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      throw error;
+    }
+    log('Replaced dashboard-token.txt after rotating the dashboard token.');
     return filePath;
   }
   fs.writeFileSync(filePath, token, { flag: 'wx', mode: 0o600 });
   if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
   return filePath;
-}
-
-function credentialsByRole(value: string | undefined): { runtime?: string; dashboard?: string } {
-  if (isUnsetValue(value)) return {};
-  try {
-    const credentials = parseApiCredentials(value);
-    return {
-      runtime: credentials.find((credential) => credential.roles.includes('runtime'))?.token,
-      dashboard: credentials.find((credential) => credential.roles.includes('admin'))?.token,
-    };
-  } catch {
-    return {};
-  }
 }
 
 function uniqueSecret(used: string[]): string {
@@ -168,19 +179,19 @@ function archiveFiles(paths: string[], directory: string, now = Date.now()): str
   return archived;
 }
 
-function archiveAuditChainForKeyRotation(env: EnvFile): void {
+function archiveAuditChainForKeyRotation(env: EnvFile, now = Date.now()): void {
   const source = withEnvState(env, () => resolveStatePath('audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH'));
   if (!env.getValue('ASGUARD_STATE_DIR')?.trim()) env.setValue('ASGUARD_STATE_DIR', '.asguard/state');
   const destinationDirectory = stateDirectory(env);
-  archiveFiles([source], destinationDirectory);
+  archiveFiles([source], destinationDirectory, now);
 }
 
-function archiveAllState(env: EnvFile): string[] {
+function archiveAllState(env: EnvFile, now = Date.now()): string[] {
   const sources = withEnvState(env, () => stateFiles.map(([fileName, variable]) => resolveStatePath(fileName, variable)));
   const destinationDirectory = env.getValue('ASGUARD_STATE_DIR')?.trim()
     ? stateDirectory(env)
     : localStateDirectory();
-  const archived = archiveFiles(sources, destinationDirectory);
+  const archived = archiveFiles(sources, destinationDirectory, now);
   if (!env.getValue('ASGUARD_STATE_DIR')?.trim()) env.setValue('ASGUARD_STATE_DIR', '.asguard/state');
   return archived;
 }
@@ -191,21 +202,21 @@ function stateIntegrityCheck(env: EnvFile): void {
   withEnvState(env, () => { new AuditChain(chainPath); });
 }
 
-function checkItem(name: string, operation: () => void): boolean {
+function checkItem(name: string, operation: () => void, log: (message: string) => void = console.log): boolean {
   try {
     operation();
-    console.log(`PASS ${name}`);
+    log(`PASS ${name}`);
     return true;
   } catch (error) {
-    console.log(`FAIL ${name}: ${safeError(error)}`);
+    log(`FAIL ${name}: ${safeError(error)}`);
     return false;
   }
 }
 
-function checkConfiguration(envPath: string): number {
+function checkConfiguration(envPath: string, log: (message: string) => void = console.log): number {
   const env = readEnvFile(envPath);
   const resolvedStateDirectory = stateDirectory(env);
-  console.log(`INFO state directory: ${resolvedStateDirectory}`);
+  log(`INFO state directory: ${resolvedStateDirectory}`);
   const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
   const intentsDefaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet');
   const values = {
@@ -219,7 +230,7 @@ function checkConfiguration(envPath: string): number {
     intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || intentsDefaults.apiUrl,
   };
   let passed = true;
-  const run = (name: string, action: () => void) => { passed = checkItem(name, action) && passed; };
+  const run = (name: string, action: () => void) => { passed = checkItem(name, action, log) && passed; };
   run('API credentials', () => {
     if (isUnsetValue(values.credentials)) throw new Error('missing or placeholder value');
     parseApiCredentials(values.credentials);
@@ -239,7 +250,7 @@ function checkConfiguration(envPath: string): number {
   if (passed && values.publicPath) {
     const publicKey = getApprovalPublicKey(values.publicPath);
     const fingerprint = createHash('sha256').update(publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
-    console.log(`Attestation public-key SHA-256 fingerprint: ${fingerprint}`);
+    log(`Attestation public-key SHA-256 fingerprint: ${fingerprint}`);
   }
   return passed ? 0 : 1;
 }
@@ -253,68 +264,377 @@ async function askValid(
   return prompter.ask(question, { validate: validator, ...(defaultValue === undefined ? {} : { default: defaultValue }) });
 }
 
-async function collectSecret(
-  prompter: Prompter,
-  label: string,
-  existing: string | undefined,
-  prior: string[],
-): Promise<{ value: string; status: Status }> {
-  if (existing && !prior.includes(existing) && await prompter.confirm(`Keep existing ${label}?`, true)) {
-    return { value: existing, status: 'kept' };
-  }
-  let value: string;
-  if (await prompter.confirm(`Generate ${label}?`, true)) value = randomSecretHex();
-  else {
-    console.log('In another terminal run: node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'hex\'))"');
-    value = await prompter.askSecret('Paste the result', {
-      validate: (candidate) => Buffer.byteLength(candidate, 'utf8') < 32 ? 'Secret must be at least 32 bytes.' : undefined,
-    });
-  }
-  if (Buffer.byteLength(value, 'utf8') < 32 || prior.includes(value)) {
-    console.log('Secrets must be at least 32 bytes and distinct.');
-    return collectSecret(prompter, label, undefined, prior);
-  }
-  return { value, status: 'generated' };
-}
-
-function secretOutput(
-  prompter: Prompter,
-  label: string,
-  token: string,
-  tokenFile?: string,
-): Promise<() => void> {
-  const choices = tokenFile ? '[c]opy, [f]ile, or [n]one' : '[c]opy to clipboard or [n]one';
-  return prompter.ask(
-    `For ${label}, choose ${choices}`,
-    {
-      default: 'n',
-      validate: (value) => (tokenFile ? ['c', 'f', 'n'] : ['c', 'n']).includes(value.toLowerCase()) ? undefined : 'Choose an available option.',
-    },
-  ).then((answer) => () => {
-    const choice = answer.toLowerCase();
-    if (choice === 'c') console.log(copyToClipboard(token) ? 'Copied.' : 'Clipboard unavailable.');
-    if (choice === 'f' && tokenFile) console.log(writeDashboardToken(tokenFile, token));
-  });
-}
-
 function validateAccount(value: string): boolean {
   return value.length >= 2 && value.length <= 64 && accountPattern.test(value);
 }
 
-async function configureOptional(env: EnvFile, prompter: Prompter, network: string, noColor: boolean, regenerate: boolean): Promise<number> {
-  if (await prompter.confirm('Configure optional ports and origins?', false)) {
+interface PreparedConfiguration {
+  runtimeToken: string;
+  dashboardToken: string;
+  credentials: string;
+  auditKey: string;
+  auditChanged: boolean;
+  dashboardRotated: boolean;
+  privatePath: string;
+  publicPath: string;
+  keyFiles: { privatePath: string; publicPath: string };
+  generateKeys: boolean;
+}
+
+function validCredentialsFrom(value: string | undefined): ReturnType<typeof parseApiCredentials> {
+  if (isUnsetValue(value)) return [];
+  try {
+    const parsed: unknown = JSON.parse(value || '');
+    if (!Array.isArray(parsed)) return [];
+    const credentials: ReturnType<typeof parseApiCredentials> = [];
+    const ids = new Set<string>();
+    const tokens = new Set<string>();
+    for (const candidate of parsed) {
+      try {
+        const [credential] = parseApiCredentials(JSON.stringify([candidate]));
+        if (!credential || ids.has(credential.id) || tokens.has(credential.token)) continue;
+        credentials.push(credential);
+        ids.add(credential.id);
+        tokens.add(credential.token);
+      } catch {
+        // Keep independently valid credentials when another entry is incomplete.
+      }
+    }
+    return credentials;
+  } catch {
+    return [];
+  }
+}
+
+function unusedCredentialId(credentials: ReturnType<typeof parseApiCredentials>, base: string): string {
+  let id = base;
+  for (let suffix = 1; credentials.some((credential) => credential.id === id); suffix += 1) id = `${base}-${suffix}`;
+  return id;
+}
+
+function validEndpointOrDefault(name: string, value: string | undefined, fallback: string): string {
+  if (!isUnsetValue(value)) {
+    try { validateEndpoint(name, value || ''); return value || fallback; } catch { /* use the safe default */ }
+  }
+  return fallback;
+}
+
+function prepareConfiguration(
+  env: EnvFile,
+  keyDirectory: string,
+  projectDirectory: string,
+  force = false,
+): PreparedConfiguration {
+  const rawCredentials = env.getValue('ASGUARD_API_CREDENTIALS');
+  const oldCredentials = validCredentialsFrom(rawCredentials);
+  let existingCredentialsValid = false;
+  if (!isUnsetValue(rawCredentials)) {
+    try { parseApiCredentials(rawCredentials); existingCredentialsValid = true; } catch { existingCredentialsValid = false; }
+  }
+  const oldRuntime = oldCredentials.find((credential) => credential.roles.includes('runtime'))?.token;
+  const oldDashboard = oldCredentials.find((credential) =>
+    credential.roles.some((role) => ['admin', 'operator', 'auditor'].includes(role)))?.token;
+  const credentials = force ? [] : oldCredentials.slice();
+  const usedTokens = credentials.map((credential) => credential.token);
+  const runtimeToken = force || !oldRuntime ? uniqueSecret(usedTokens) : oldRuntime;
+  if (!oldRuntime || force) {
+    credentials.push({
+      id: unusedCredentialId(credentials, 'runtime-local'),
+      token: runtimeToken,
+      roles: ['runtime'],
+    });
+    usedTokens.push(runtimeToken);
+  }
+  const dashboardToken = force || !oldDashboard ? uniqueSecret(usedTokens) : oldDashboard;
+  if (!oldDashboard || force) {
+    credentials.push({
+      id: unusedCredentialId(credentials, 'dashboard-local'),
+      token: dashboardToken,
+      roles: ['admin', 'operator', 'auditor'],
+    });
+  }
+  let serializedCredentials = rawCredentials || '';
+  if (force || !oldRuntime || !oldDashboard || !existingCredentialsValid) {
+    serializedCredentials = JSON.stringify(credentials);
+    env.setValue('ASGUARD_API_CREDENTIALS', serializedCredentials);
+  }
+  const existingAuditKey = env.getValue('ASGUARD_AUDIT_KEY');
+  const credentialTokens = credentials.map((credential) => credential.token);
+  const auditKey = !force && !isUnsetValue(existingAuditKey)
+    && Buffer.byteLength(existingAuditKey || '', 'utf8') >= 32
+    && !credentialTokens.includes(existingAuditKey || '')
+    ? existingAuditKey || ''
+    : uniqueSecret([...credentialTokens]);
+  env.setValue('ASGUARD_AUDIT_KEY', auditKey);
+
+  const keyFiles = keyPaths(keyDirectory);
+  const configuredPrivate = env.getValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH');
+  const configuredPublic = env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH');
+  let privatePath = configuredPrivate ? path.resolve(projectDirectory, configuredPrivate) : '';
+  let publicPath = configuredPublic ? path.resolve(projectDirectory, configuredPublic) : '';
+  let generateKeys = force || !configuredPrivate || !configuredPublic;
+  if (!generateKeys) {
+    try { validateApprovalKeyPair(privatePath, publicPath); } catch { generateKeys = true; }
+  }
+  if (generateKeys) {
+    privatePath = keyFiles.privatePath;
+    publicPath = keyFiles.publicPath;
+    env.setValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH', relativePosix(privatePath, projectDirectory));
+    env.setValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', relativePosix(publicPath, projectDirectory));
+  }
+
+  const currentNetwork = env.getValue('ASGUARD_NEAR_NETWORK');
+  let network = currentNetwork || 'testnet';
+  try { validateNetwork(network); } catch { network = 'testnet'; }
+  env.setValue('ASGUARD_NEAR_NETWORK', network);
+  const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
+  const port = env.getValue('ASGUARD_PORT');
+  try { validatePort(port || ''); } catch { env.setValue('ASGUARD_PORT', '8080'); }
+  if (isUnsetValue(env.getValue('ASGUARD_HOST'))) env.setValue('ASGUARD_HOST', 'localhost');
+  if (isUnsetValue(env.getValue('ASGUARD_ALLOWED_ORIGINS'))) env.setValue('ASGUARD_ALLOWED_ORIGINS', 'http://localhost:3000');
+  if (isUnsetValue(env.getValue('ASGUARD_API_URL'))) env.setValue('ASGUARD_API_URL', 'http://localhost:8080');
+  if (isUnsetValue(env.getValue('NEXT_PUBLIC_ASGUARD_API_URL'))) env.setValue('NEXT_PUBLIC_ASGUARD_API_URL', 'http://localhost:8080');
+
+  const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
+  const currentRpc = env.getValue('ASGUARD_NEAR_RPC_URL');
+  const knownRpc = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
+  env.setValue('ASGUARD_NEAR_RPC_URL', !isUnsetValue(currentRpc) && knownRpc.includes(currentRpc || '')
+    ? rpcDefault
+    : validEndpointOrDefault('ASGUARD_NEAR_RPC_URL', currentRpc, rpcDefault));
+  const intentsUrl = validEndpointOrDefault(
+    'ASGUARD_NEAR_INTENTS_API_URL', env.getValue('ASGUARD_NEAR_INTENTS_API_URL'), intentsDefaults.apiUrl,
+  );
+  env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsUrl);
+  if (isUnsetValue(env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'))) {
+    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', nearIntentsDefaults(
+      network as 'testnet' | 'mainnet', intentsUrl === 'https://www.usetidepool.tech',
+    ).verifier);
+  }
+  if (isUnsetValue(env.getValue('ASGUARD_AI_ENABLED'))) env.setValue('ASGUARD_AI_ENABLED', 'false');
+  if (isUnsetValue(env.getValue('ASGUARD_DEMO_SUBMIT'))) env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
+  return {
+    runtimeToken,
+    dashboardToken,
+    credentials: serializedCredentials,
+    auditKey,
+    auditChanged: existingAuditKey !== auditKey,
+    dashboardRotated: force && oldDashboard !== dashboardToken,
+    privatePath,
+    publicPath,
+    keyFiles,
+    generateKeys,
+  };
+}
+
+function commitConfiguration(
+  env: EnvFile,
+  envPath: string,
+  keyDirectory: string,
+  projectDirectory: string,
+  prepared: PreparedConfiguration,
+  resetState: boolean,
+  log: (message: string) => void,
+  now = Date.now(),
+): void {
+  const repository = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: projectDirectory, encoding: 'utf8', shell: false, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (repository.error || repository.status !== 0) {
+    log('Git metadata unavailable; skipped the local-secret ignore check.');
+  } else {
+    const repositoryRoot = repository.stdout.trim();
+    const secretPaths = [
+      path.relative(repositoryRoot, envPath),
+      path.relative(repositoryRoot, prepared.privatePath),
+      path.relative(repositoryRoot, path.join(projectDirectory, '.asguard', 'dashboard-token.txt')),
+    ].map((filePath) => filePath.split(path.sep).join('/'));
+    const checks = secretPaths.map((filePath) => spawnSync('git', ['check-ignore', '-q', filePath], {
+      cwd: repositoryRoot, encoding: 'utf8', shell: false, stdio: 'ignore',
+    }));
+    if (checks.some((result) => result.error)) {
+      log('Could not verify local-secret ignore rules; ensure .env, .asguard/, and *.pem are ignored.');
+    } else if (checks.some((result) => result.status !== 0)) {
+      log('Warning: one or more local secret paths are not ignored by Git. Add .env, .asguard/, and *.pem to .gitignore.');
+    }
+  }
+  if (prepared.generateKeys) {
+    backupFile(prepared.keyFiles.privatePath);
+    backupFile(prepared.keyFiles.publicPath);
+    generateAttestationKeyPair(keyDirectory);
+  }
+  if (prepared.auditChanged && !resetState) archiveAuditChainForKeyRotation(env, now);
+  validateSetupValues({
+    credentials: prepared.credentials,
+    auditKey: prepared.auditKey,
+    privatePath: prepared.privatePath,
+    publicPath: prepared.publicPath,
+    port: env.getValue('ASGUARD_PORT') || '8080',
+    network: env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet',
+    rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || '',
+    intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '',
+  });
+  const changed = writeEnvFile(envPath, env);
+  verifyNodeEnvFile(envPath, prepared.credentials, prepared.auditKey);
+  const tokenPath = path.join(projectDirectory, '.asguard', 'dashboard-token.txt');
+  log(writeDashboardToken(tokenPath, prepared.dashboardToken, prepared.dashboardRotated, log));
+  log(changed ? `Wrote ${envPath}` : `${envPath} unchanged.`);
+  if (prepared.generateKeys) {
+    log(`Attestation keys: ${path.relative(projectDirectory, prepared.keyFiles.privatePath).split(path.sep).join('/')} and ${path.relative(projectDirectory, prepared.keyFiles.publicPath).split(path.sep).join('/')}`);
+  }
+}
+
+function configurationIsValid(env: EnvFile, projectDirectory: string): boolean {
+  try {
+    const credentials = parseApiCredentials(env.getValue('ASGUARD_API_CREDENTIALS'));
+    if (!credentials.some((credential) => credential.roles.includes('runtime'))
+      || !credentials.some((credential) => credential.roles.some((role) => ['admin', 'operator', 'auditor'].includes(role)))) return false;
+    const auditKey = env.getValue('ASGUARD_AUDIT_KEY') || '';
+    if (Buffer.byteLength(auditKey, 'utf8') < 32 || credentials.some((credential) => credential.token === auditKey)) return false;
+    const privatePath = env.getValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH') || '';
+    const publicPath = env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH') || '';
+    if (!privatePath || !publicPath) return false;
+    validateApprovalKeyPair(path.resolve(projectDirectory, privatePath), path.resolve(projectDirectory, publicPath));
+    validatePort(env.getValue('ASGUARD_PORT') || '');
+    validateNetwork(env.getValue('ASGUARD_NEAR_NETWORK') || '');
+    validateEndpoint('ASGUARD_NEAR_RPC_URL', env.getValue('ASGUARD_NEAR_RPC_URL') || '');
+    validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '');
+    for (const name of ['ASGUARD_HOST', 'ASGUARD_ALLOWED_ORIGINS', 'ASGUARD_API_URL', 'NEXT_PUBLIC_ASGUARD_API_URL',
+      'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT']) {
+      if (isUnsetValue(env.getValue(name))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tidepoolWalletConfigured(env: EnvFile): boolean {
+  const accountId = env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
+  const privateKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
+  return env.getValue('ASGUARD_NEAR_NETWORK') === 'testnet'
+    && env.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE') === 'true'
+    && nearDemoKeyMatches(privateKey, accountId);
+}
+
+function enableTidepoolWallet(env: EnvFile, log: (message: string) => void, rotate = false): void {
+  const currentAccount = env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
+  const currentKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
+  const pair = !rotate && nearDemoKeyMatches(currentKey, currentAccount)
+    ? { accountId: currentAccount, privateKey: currentKey }
+    : generateNearDemoKeyPair();
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', pair.accountId);
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', pair.privateKey);
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'true');
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'true');
+  const defaults = nearIntentsDefaults('testnet', true);
+  env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
+  env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
+  log('WARNING: Tidepool settlement is testnet only. The key stays in local .env; the backend strips it from its process at startup. Never commit .env or use a mainnet key.');
+}
+
+function disableTidepoolWallet(env: EnvFile): void {
+  const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
+  const defaults = nearIntentsDefaults(network === 'mainnet' ? 'mainnet' : 'testnet');
+  env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
+  env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
+  env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
+}
+
+async function promptForTidepoolWallet(
+  env: EnvFile,
+  prompter: Prompter,
+  fetchImpl: typeof fetch,
+  log: (message: string) => void,
+  rotate = false,
+): Promise<void> {
+  const probe = await probeTidepool(fetchImpl);
+  if (probe.available) {
+    log('Tidepool testnet: reachable.');
+  } else {
+    log(`Tidepool testnet: not reachable right now (${probe.reason || 'could not reach the service'}).`);
+  }
+  const question = probe.available
+    ? 'Enable the on-chain demo wallet? ASGUARD creates a local, testnet-only wallet so demo:onchain can settle a real testnet swap.'
+    : 'The on-chain demo needs Tidepool, which is down at the moment. Prepare the demo wallet anyway so demo:onchain works when it is back?';
+  if (await prompter.confirm(question, false)) enableTidepoolWallet(env, log, rotate);
+  else disableTidepoolWallet(env);
+}
+
+async function configureAdvanced(
+  env: EnvFile,
+  prompter: Prompter,
+  prepared: PreparedConfiguration,
+  keyDirectory: string,
+  projectDirectory: string,
+  noColor: boolean,
+  fetchImpl: typeof fetch,
+  log: (message: string) => void,
+  forceRequested = false,
+): Promise<{ prepared: PreparedConfiguration; status: number }> {
+  log('Current secret delivery: dashboard token saved to .asguard/dashboard-token.txt; clipboard copying is off.');
+  if (await prompter.confirm('Copy a secret to the clipboard?', false)) {
+    const choices = ['dashboard token', 'runtime token'];
+    const tidepoolConfigured = nearDemoKeyMatches(
+      env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '',
+      env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '',
+    );
+    if (tidepoolConfigured) choices.push('Tidepool account ID');
+    const selected = await prompter.choose('Select value to copy:', choices, { defaultIndex: 0 });
+    const value = selected === 'dashboard token' ? prepared.dashboardToken
+      : selected === 'runtime token' ? prepared.runtimeToken
+        : env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
+    log(copyToClipboard(value) ? 'Copied.' : 'Clipboard unavailable.');
+  }
+
+  const currentNetwork = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
+  log(`Current network: ${currentNetwork}; RPC: ${env.getValue('ASGUARD_NEAR_RPC_URL') || '(default)'}; Intents API: ${env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '(default)'}.`);
+  if (await prompter.confirm('Configure network and endpoints?', false)) {
+    const networkChoice = await prompter.choose('NEAR network:', ['testnet', 'mainnet'], { defaultIndex: currentNetwork === 'mainnet' ? 1 : 0 });
+    if (networkChoice === 'mainnet') {
+      await prompter.confirmTyped('Type mainnet to confirm', 'mainnet');
+      env.setValue('ASGUARD_NEAR_NETWORK', 'mainnet');
+      disableTidepoolWallet(env);
+    } else env.setValue('ASGUARD_NEAR_NETWORK', 'testnet');
+    const network = env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet';
+    const defaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
+    const rpc = await prompter.ask('ASGUARD_NEAR_RPC_URL', {
+      default: env.getValue('ASGUARD_NEAR_RPC_URL') || nearRpcDefault(network as 'testnet' | 'mainnet'),
+      validate: (value) => {
+        try { validateEndpoint('ASGUARD_NEAR_RPC_URL', value); return undefined; } catch (error) { return safeError(error); }
+      },
+    });
+    const intentsUrl = await prompter.ask('ASGUARD_NEAR_INTENTS_API_URL', {
+      default: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || defaults.apiUrl,
+      validate: (value) => {
+        try { validateEndpoint('ASGUARD_NEAR_INTENTS_API_URL', value); return undefined; } catch (error) { return safeError(error); }
+      },
+    });
+    env.setValue('ASGUARD_NEAR_RPC_URL', rpc);
+    env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsUrl);
+    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', nearIntentsDefaults(
+      network as 'testnet' | 'mainnet', intentsUrl === 'https://www.usetidepool.tech',
+    ).verifier);
+    try { log(`NEAR RPC: ${await probeRpc(rpc, fetchImpl)}`); } catch { log('NEAR RPC: unreachable (continuing)'); }
+  }
+
+  log(`Current ports and origins: host=${env.getValue('ASGUARD_HOST') || 'localhost'}, port=${env.getValue('ASGUARD_PORT') || '8080'}, origins=${env.getValue('ASGUARD_ALLOWED_ORIGINS') || 'http://localhost:3000'}.`);
+  if (await prompter.confirm('Configure ports and origins?', false)) {
     env.setValue('ASGUARD_HOST', await prompter.ask('ASGUARD_HOST', { default: env.getValue('ASGUARD_HOST') || 'localhost' }));
     env.setValue('ASGUARD_PORT', await askValid(prompter, 'ASGUARD_PORT', (value) => {
       try { validatePort(value); return undefined; } catch (error) { return safeError(error); }
     }, env.getValue('ASGUARD_PORT') || '8080'));
-    for (const [key, fallback] of [
+    for (const [name, fallback] of [
       ['ASGUARD_ALLOWED_ORIGINS', 'http://localhost:3000'],
       ['ASGUARD_API_URL', 'http://localhost:8080'],
       ['NEXT_PUBLIC_ASGUARD_API_URL', 'http://localhost:8080'],
-    ]) env.setValue(key, await prompter.ask(key, { default: env.getValue(key) || fallback }));
+    ]) env.setValue(name, await prompter.ask(name, { default: env.getValue(name) || fallback }));
   }
 
-  if (await prompter.confirm('Configure AI advisory (annotate-only)?', false)) {
+  log(`Current NEAR AI advisory: ${env.getValue('ASGUARD_AI_ENABLED') === 'true' ? env.getValue('ASGUARD_AI_PROVIDER') || 'enabled' : 'off'}.`);
+  if (await prompter.confirm('Configure NEAR AI advisory (annotate-only)?', false)) {
     env.setValue('ASGUARD_AI_ENABLED', 'true');
     const mode = await prompter.choose('AI provider:', ['heuristic (no key needed)', 'live NEAR AI Cloud'], { defaultIndex: 0 });
     if (mode.startsWith('heuristic')) {
@@ -323,29 +643,16 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       env.setValue('ASGUARD_AI_API_KEY', '');
       env.setValue('ASGUARD_AI_MODEL', '');
     } else {
-      console.log('Get a key at https://cloud.near.ai. Verify endpoint details at https://docs.near.ai.');
-      const endpoint = await prompter.ask('Full chat-completions URL', { validate: (value) => {
-        try { validateNearAiEndpoint(value); return undefined; } catch (error) { return safeError(error); }
-      } });
+      const endpoint = await prompter.ask('Full chat-completions URL', {
+        default: env.getValue('ASGUARD_AI_API_URL') || '',
+        validate: (value) => {
+          try { validateNearAiEndpoint(value); return undefined; } catch (error) { return safeError(error); }
+        },
+      });
       const apiKey = await prompter.askSecret('NEAR AI API key');
-      let models: string[] = [];
-      try {
-        const modelsUrl = endpoint.replace(/\/chat\/completions\/?$/, '/models');
-        const response = await fetch(modelsUrl, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5_000) });
-        if (response.ok) {
-          const body = await response.json() as { data?: Array<{ id?: unknown }> };
-          models = (body.data || []).flatMap((model) => typeof model.id === 'string' ? [model.id] : []).slice(0, 10);
-        }
-      } catch { models = []; }
-      if (models.length) console.log(`Available models: ${models.join(', ')}`);
-      else console.log('Could not list provider models; enter the model name manually.');
-      const model = await prompter.ask('Model name', models[0] ? { default: models[0] } : {});
-      const result = await probeNearAi({ endpoint, model, apiKey });
-      if (result.ok) console.log(`NEAR AI reachable: ${model}`);
-      else {
-        console.log(`NEAR AI test failed${result.status ? ` (HTTP ${result.status})` : ''}. ${result.reason || ''}`);
-        if (!await prompter.confirm('Save anyway?', false)) return 1;
-      }
+      const model = await prompter.ask('Model name', { default: env.getValue('ASGUARD_AI_MODEL') || '' });
+      const result = await probeNearAi({ endpoint, model, apiKey, fetchImpl });
+      if (!result.ok && !await prompter.confirm('Save anyway?', false)) return { prepared, status: 1 };
       env.setValue('ASGUARD_AI_PROVIDER', 'near-ai');
       env.setValue('ASGUARD_AI_API_URL', endpoint);
       env.setValue('ASGUARD_AI_API_KEY', apiKey);
@@ -353,41 +660,42 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
     }
   }
 
-  if (await prompter.confirm('Configure a public wallet-watch demo account?', false)) {
-    let account = '';
-    try {
-      account = await prompter.ask('ASGUARD_WATCH_DEMO_ACCOUNT (leave empty to skip)', {
-        validate: (value) => !value || validateAccount(value) ? undefined : 'Enter a valid public NEAR account ID, or leave empty to skip.',
-      });
-    } catch (error) {
-      if (safeError(error) !== 'Too many invalid responses.') throw error;
-      console.log('Skipping wallet-watch demo account after invalid entries.');
-    }
+  log(`Current public wallet-watch account: ${env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '(not configured)'}.`);
+  if (await prompter.confirm('Configure public wallet-watch demo account?', false)) {
+    const account = await prompter.ask('ASGUARD_WATCH_DEMO_ACCOUNT (leave empty to skip)', {
+      default: env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '',
+      validate: (value) => !value || validateAccount(value) ? undefined : 'Enter a valid public NEAR account ID, or leave empty to skip.',
+    });
     if (account) env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', account);
-    else console.log('Skipping wallet-watch demo account.');
+    else env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', '');
   }
 
+  log('Current webhook alert URLs are hidden.');
   if (await prompter.confirm('Configure webhook alerts?', false)) {
     for (const name of ['TELEGRAM_WEBHOOK_URL', 'SLACK_WEBHOOK_URL', 'DISCORD_WEBHOOK_URL', 'ASGUARD_GENERIC_WEBHOOK_URL']) {
-      const value = await prompter.askSecret(`${name} (leave empty to skip)`, { validate: (candidate) => {
-        if (!candidate) return undefined;
-        try { return new URL(candidate).protocol === 'https:' ? undefined : 'Webhook URL must use HTTPS.'; }
-        catch { return 'Webhook URL must use HTTPS.'; }
-      } });
+      const value = await prompter.askSecret(`${name} (leave empty to skip)`, {
+        validate: (candidate) => {
+          if (!candidate) return undefined;
+          try { return new URL(candidate).protocol === 'https:' ? undefined : 'Webhook URL must use HTTPS.'; }
+          catch { return 'Webhook URL must use HTTPS.'; }
+        },
+      });
       if (value) env.setValue(name, value);
     }
   }
 
-  if (await prompter.confirm('Enable testnet submit demo? Testnet only, at most 0.01 NEAR; the backend deletes the key from its process at startup.', false)) {
-    if (network !== 'testnet') {
-      console.log('The submit demo is testnet-only; it remains disabled.');
+  log(`Current host-signed testnet transfer demo: ${env.getValue('ASGUARD_DEMO_SUBMIT') === 'true' ? 'enabled' : 'disabled'}.`);
+  if (await prompter.confirm('Configure host-signed NEAR transfer demo?', false)) {
+    if ((env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet') !== 'testnet') {
+      log('The submit demo is testnet-only; it remains disabled.');
       env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
     } else {
       const warning = 'WARNING: testnet only; maximum 0.01 NEAR; private key stored in local .env and deleted from the backend process at startup.';
-      console.log(noColor || process.env.NO_COLOR !== undefined ? warning : `\u001b[1m${warning}\u001b[0m`);
-      console.log('For creating a testnet account, see https://docs.near.org/.');
-      const sender = await askValid(prompter, 'ASGUARD_DEMO_NEAR_ACCOUNT_ID', (value) => validateAccount(value) ? undefined : 'Invalid account ID.');
-      const recipient = await askValid(prompter, 'ASGUARD_DEMO_NEAR_RECIPIENT', (value) => validateAccount(value) ? undefined : 'Invalid account ID.');
+      log(noColor ? warning : `\u001b[1m${warning}\u001b[0m`);
+      const sender = await askValid(prompter, 'ASGUARD_DEMO_NEAR_ACCOUNT_ID', (value) => validateAccount(value) ? undefined : 'Invalid account ID.',
+        env.getValue('ASGUARD_DEMO_NEAR_ACCOUNT_ID'));
+      const recipient = await askValid(prompter, 'ASGUARD_DEMO_NEAR_RECIPIENT', (value) => validateAccount(value) ? undefined : 'Invalid account ID.',
+        env.getValue('ASGUARD_DEMO_NEAR_RECIPIENT'));
       const amount = await askValid(prompter, 'ASGUARD_DEMO_NEAR_AMOUNT', (value) => {
         const parts = value.split('.');
         if (parts.length > 2 || !/^\d+$/.test(parts[0] || '') || (parts[1] !== undefined && !/^\d{1,24}$/.test(parts[1]))) {
@@ -395,7 +703,7 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
         }
         const yocto = BigInt(`${parts[0]}${(parts[1] || '').padEnd(24, '0')}`);
         return yocto > 0n && yocto <= 10n ** 22n ? undefined : 'Amount must be greater than zero and at most 0.01 NEAR.';
-      }, '0.001');
+      }, env.getValue('ASGUARD_DEMO_NEAR_AMOUNT') || '0.001');
       const privateKey = await prompter.askSecret('Private key (ed25519:...) or press Enter to fill later', {
         validate: (value) => !value || value.startsWith('ed25519:') ? undefined : 'Private key must start with ed25519:.',
       });
@@ -403,218 +711,31 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       env.setValue('ASGUARD_DEMO_NEAR_RECIPIENT', recipient);
       env.setValue('ASGUARD_DEMO_NEAR_AMOUNT', amount);
       if (privateKey) env.setValue('ASGUARD_DEMO_NEAR_PRIVATE_KEY', privateKey);
-      else console.log('Fill ASGUARD_DEMO_NEAR_PRIVATE_KEY in .env later; the submit demo will remain disabled.');
       env.setValue('ASGUARD_DEMO_SUBMIT', privateKey ? 'true' : 'false');
     }
-  } else env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
-
-  if (network === 'testnet') {
-    const enableTidepool = await prompter.confirm('Create a local Tidepool on-chain demo testnet keypair and enable optional settlement?', false);
-    if (!enableTidepool) {
-      const defaults = nearIntentsDefaults('testnet');
-      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
-      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
-    } else {
-      const currentKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
-      const currentAccount = env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
-      const existingValid = nearDemoKeyMatches(currentKey, currentAccount);
-      let rotate = !existingValid;
-      if (existingValid && regenerate) {
-        rotate = await prompter.confirm('Rotate the existing Tidepool demo keypair?', false);
-      }
-      const pair = rotate ? generateNearDemoKeyPair() : { accountId: currentAccount, privateKey: currentKey };
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', pair.accountId);
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', pair.privateKey);
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'true');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'true');
-      const defaults = nearIntentsDefaults('testnet', true);
-      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
-      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
-      const warning = 'WARNING: Tidepool settlement is testnet only. The key stays in local .env; the backend strips it from its process at startup. Never commit .env or use a mainnet key.';
-      console.log(noColor || process.env.NO_COLOR !== undefined ? warning : `\u001b[1m${warning}\u001b[0m`);
-      try {
-        const response = await fetch('https://www.usetidepool.tech/v0/health', { signal: AbortSignal.timeout(5_000) });
-        if (!response.ok) console.log(`Tidepool health probe returned HTTP ${response.status}; setup will continue.`);
-      } catch { console.log('Tidepool health probe unavailable; setup will continue.'); }
-      if (await prompter.confirm('Copy Tidepool account ID to clipboard?', true)) {
-        console.log(copyToClipboard(pair.accountId) ? 'Account ID copied.' : 'Clipboard unavailable.');
-      }
-      if (await prompter.confirm('Copy the Tidepool private key to clipboard? It is sensitive.', false)) {
-        console.log(copyToClipboard(pair.privateKey) ? 'Private key copied.' : 'Clipboard unavailable.');
-      }
-    }
-  } else {
-    const defaults = nearIntentsDefaults('mainnet');
-    env.setValue('ASGUARD_NEAR_INTENTS_API_URL', defaults.apiUrl);
-    env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', defaults.verifier);
-    env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
-    env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
-    env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
-    env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
   }
-  return 0;
+
+  let nextPrepared = prepared;
+  log('Rotating these values replaces local credentials and archives the audit chain.');
+  if (forceRequested || await prompter.confirm('Rotate secrets or keys?', false)) {
+    await prompter.confirmTyped('Type regenerate to rotate secrets and keys', 'regenerate');
+    nextPrepared = prepareConfiguration(env, keyDirectory, projectDirectory, true);
+  }
+  return { prepared: nextPrepared, status: 0 };
 }
 
-async function interactive(
-  env: EnvFile,
-  envPath: string,
-  keyDirectory: string,
-  force: boolean,
-  noColor: boolean,
-  resetState: boolean,
-): Promise<number> {
-  const prompter = createPrompter({ input: process.stdin, output: process.stdout, isTTY: Boolean(process.stdin.isTTY), noColor });
-  let regenerate = force;
-  if (resetState) {
-    await prompter.confirmTyped('Type reset to archive existing state', 'reset');
-    const archived = archiveAllState(env);
-    writeEnvFile(envPath, env);
-    console.log(archived.length ? `Archived state files:\n${archived.join('\n')}` : 'No existing state files needed archiving.');
-  }
-  if (fs.existsSync(envPath)) {
-    console.log(`Existing environment file detected: ${envPath}`);
-    if (force) await prompter.confirmTyped('Type regenerate to replace secrets', 'regenerate');
-    else {
-      const choice = await prompter.choose('Configuration mode:', ['keep valid values and fill only gaps', 'regenerate secrets'], { defaultIndex: 0 });
-      if (choice === 'regenerate secrets') {
-        regenerate = true;
-        await prompter.confirmTyped('Type regenerate to replace secrets', 'regenerate');
-      }
-    }
-  }
-
-  const keyFiles = keyPaths(keyDirectory);
-  const ignorePaths = [envPath, path.join(keyDirectory, 'x.pem')].map((value) =>
-    path.relative(process.cwd(), value).split(path.sep).join('/'));
-  const ignoreResults = ignorePaths.map((value) => spawnSync('git', ['check-ignore', '-q', value], { shell: false, stdio: 'ignore' }));
-  if (ignoreResults.some((result) => result.error)) console.log('Git is unavailable; skipped the ignore check.');
-  else if (ignoreResults.some((result) => result.status !== 0)) {
-    console.log('Warning: one or more paths are not ignored by Git.');
-    if (await prompter.confirm('Show .gitignore entries to add?', true)) {
-      console.log('.env\n.asguard/\n*.pem');
-      console.log('This wizard does not edit .gitignore; add these entries before committing local configuration.');
-    }
-  }
-
-  console.log('Runtime token authorizes agent API requests; dashboard token signs in operators; audit key protects audit records.');
-  const current = credentialsByRole(env.getValue('ASGUARD_API_CREDENTIALS'));
-  const secrets: string[] = [];
-  const runtime = await collectSecret(prompter, 'runtime token', regenerate ? undefined : current.runtime, secrets);
-  secrets.push(runtime.value);
-  const dashboard = await collectSecret(prompter, 'dashboard token', regenerate ? undefined : current.dashboard, secrets);
-  secrets.push(dashboard.value);
-  const originalAudit = env.getValue('ASGUARD_AUDIT_KEY');
-  const oldAudit = regenerate || isUnsetValue(originalAudit) ? undefined : originalAudit;
-  const audit = await collectSecret(prompter, 'audit key', oldAudit, secrets);
-  const credentials = JSON.stringify([
-    { id: 'runtime-local', token: runtime.value, roles: ['runtime'] },
-    { id: 'dashboard-local', token: dashboard.value, roles: ['admin', 'operator', 'auditor'] },
-  ]);
-  env.setValue('ASGUARD_API_CREDENTIALS', credentials);
-  env.setValue('ASGUARD_AUDIT_KEY', audit.value);
-  if (originalAudit !== audit.value && !resetState) archiveAuditChainForKeyRotation(env);
-  else if (!env.getValue('ASGUARD_STATE_DIR')?.trim()
-    && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32) {
-    console.log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
-  }
-  const outputActions = [
-    await secretOutput(prompter, 'dashboard token', dashboard.value, path.join(keyDirectory, 'dashboard-token.txt')),
-    await secretOutput(prompter, 'runtime token', runtime.value),
+function setupSummary(env: EnvFile, prepared: PreparedConfiguration): string[] {
+  const rows: Array<[string, string]> = [
+    ['ASGUARD_API_CREDENTIALS', `runtime + dashboard credentials (${prepared.credentials.length} chars)`],
+    ['ASGUARD_AUDIT_KEY', masked(prepared.auditKey)],
+    ['ASGUARD_ATTESTATION_PRIVATE_KEY_PATH', env.getValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH') || '(missing)'],
+    ['ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', env.getValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH') || '(missing)'],
+    ['ASGUARD_NEAR_NETWORK', env.getValue('ASGUARD_NEAR_NETWORK') || 'testnet'],
+    ['ASGUARD_NEAR_RPC_URL', masked(env.getValue('ASGUARD_NEAR_RPC_URL') || '')],
+    ['ASGUARD_NEAR_INTENTS_API_URL', masked(env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '')],
+    ['ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') ? '(configured)' : '(empty)'],
   ];
-
-  let validPair = false;
-  if (fs.existsSync(keyFiles.privatePath) && fs.existsSync(keyFiles.publicPath)) {
-    try { validateApprovalKeyPair(keyFiles.privatePath, keyFiles.publicPath); validPair = true; } catch { validPair = false; }
-  }
-  if (!validPair && (fs.existsSync(keyFiles.privatePath) || fs.existsSync(keyFiles.publicPath))) {
-    if (!await prompter.confirm('Existing attestation files are invalid or mismatched. Regenerate with backups?', true)) {
-      throw new Error('Invalid attestation keys were not changed.');
-    }
-  }
-  const reusePair = validPair && !regenerate
-    ? await prompter.confirm('Reuse the existing valid Ed25519 attestation key pair?', true) : false;
-  const configuredNetwork = env.getValue('ASGUARD_NEAR_NETWORK');
-  const network = await prompter.ask('NEAR network (testnet or mainnet)', {
-    default: !isUnsetValue(configuredNetwork) ? configuredNetwork : 'testnet',
-    validate: (value) => ['testnet', 'mainnet'].includes(value) ? undefined : 'Choose testnet or mainnet.',
-  });
-  if (network === 'mainnet') {
-    console.log('Demos refuse mainnet. Type mainnet to confirm this production-network configuration.');
-    await prompter.confirmTyped('Confirm network', 'mainnet');
-  }
-  env.setValue('ASGUARD_NEAR_NETWORK', network);
-  const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
-  const knownRpcUrls = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
-  const currentRpcUrl = env.getValue('ASGUARD_NEAR_RPC_URL');
-  let rpcUrl = rpcDefault;
-  if (!isUnsetValue(currentRpcUrl) && !knownRpcUrls.includes(currentRpcUrl || '')) {
-    try {
-      validateEndpoint('ASGUARD_NEAR_RPC_URL', currentRpcUrl || '');
-      rpcUrl = currentRpcUrl || rpcDefault;
-    } catch {
-      console.log('Ignoring invalid custom NEAR RPC URL; using the network default.');
-    }
-  }
-  env.setValue('ASGUARD_NEAR_RPC_URL', rpcUrl);
-  try { console.log(`NEAR RPC: ${await probeRpc(rpcUrl)}`); } catch { console.log('NEAR RPC: unreachable (continuing)'); }
-
-  const optionalResult = await configureOptional(env, prompter, network, noColor, regenerate);
-  if (optionalResult !== 0) return optionalResult;
-  const intentsUrl = env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || nearIntentsDefaults(network as 'testnet' | 'mainnet').apiUrl;
-  const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet', intentsUrl === 'https://www.usetidepool.tech');
-  const rows: Array<[string, Status, string]> = [
-    ['ASGUARD_API_CREDENTIALS', runtime.status === 'kept' && dashboard.status === 'kept' ? 'kept' : 'set', `•••• (${credentials.length} chars)`],
-    ['ASGUARD_AUDIT_KEY', audit.status, masked(audit.value)],
-    ['ASGUARD_ATTESTATION_PRIVATE_KEY_PATH', reusePair ? 'kept' : 'generated', relativePosix(keyFiles.privatePath)],
-    ['ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', reusePair ? 'kept' : 'generated', relativePosix(keyFiles.publicPath)],
-    ['ASGUARD_NEAR_NETWORK', 'set', network],
-    ['ASGUARD_NEAR_RPC_URL', 'set', masked(rpcUrl)],
-    ['ASGUARD_NEAR_INTENTS_API_URL', 'set', masked(intentsUrl)],
-    ['ASGUARD_NEAR_INTENTS_VERIFIER', 'set', env.getValue('ASGUARD_NEAR_INTENTS_VERIFIER') || intentsDefaults.verifier],
-    ['ASGUARD_AI_ENABLED', env.getValue('ASGUARD_AI_ENABLED') === 'true' ? 'set' : 'skipped', env.getValue('ASGUARD_AI_ENABLED') === 'true' ? 'enabled' : 'off'],
-    ['ASGUARD_AI_API_KEY', env.getValue('ASGUARD_AI_API_KEY') ? 'set' : 'skipped', env.getValue('ASGUARD_AI_API_KEY') ? masked(env.getValue('ASGUARD_AI_API_KEY') || '') : '(empty)'],
-    ['ASGUARD_WATCH_DEMO_ACCOUNT', env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') ? 'set' : 'skipped', env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '(empty)'],
-    ['ASGUARD_DEMO_SUBMIT', env.getValue('ASGUARD_DEMO_SUBMIT') === 'true' ? 'set' : 'skipped', env.getValue('ASGUARD_DEMO_SUBMIT') || 'false'],
-    ['ASGUARD_DEMO_NEAR_PRIVATE_KEY', env.getValue('ASGUARD_DEMO_NEAR_PRIVATE_KEY') ? 'set' : 'skipped', env.getValue('ASGUARD_DEMO_NEAR_PRIVATE_KEY') ? masked(env.getValue('ASGUARD_DEMO_NEAR_PRIVATE_KEY') || '') : '(empty)'],
-  ];
-  for (const name of ['TELEGRAM_WEBHOOK_URL', 'SLACK_WEBHOOK_URL', 'DISCORD_WEBHOOK_URL', 'ASGUARD_GENERIC_WEBHOOK_URL']) {
-    rows.push([name, env.getValue(name) ? 'set' : 'skipped', env.getValue(name) ? masked(env.getValue(name) || '') : '(empty)']);
-  }
-  console.log('\nKey                                      Status     Value');
-  for (const [key, status, value] of rows) console.log(`${key.padEnd(40)} ${status.padEnd(10)} ${value}`);
-  if (!await prompter.confirm('Write changes?', true)) return 0;
-
-  if (!reusePair) {
-    backupFile(keyFiles.privatePath);
-    backupFile(keyFiles.publicPath);
-    generateAttestationKeyPair(keyDirectory);
-  }
-  const privatePath = relativePosix(keyFiles.privatePath);
-  const publicPath = relativePosix(keyFiles.publicPath);
-  env.setValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH', privatePath);
-  env.setValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', publicPath);
-  validateSetupValues({
-    credentials,
-    auditKey: audit.value,
-    privatePath: keyFiles.privatePath,
-    publicPath: keyFiles.publicPath,
-    port: env.getValue('ASGUARD_PORT') || '8080',
-    network,
-    rpcUrl,
-    intentsUrl,
-  });
-  const changed = writeEnvFile(envPath, env);
-  verifyNodeEnvFile(envPath, credentials, audit.value);
-  for (const action of outputActions) action();
-  console.log(changed ? `Wrote ${envPath}` : `${envPath} unchanged.`);
-  await offerPostSetupActions({
-    interactiveTTY: Boolean(process.stdin.isTTY), yes: false, check: false, prompter,
-  });
-  return 0;
+  return rows.map(([name, value]) => `${name.padEnd(40)} ${value}`);
 }
 
 function verifyNodeEnvFile(filePath: string, credentials: string, auditKey: string): void {
@@ -627,135 +748,206 @@ function verifyNodeEnvFile(filePath: string, credentials: string, auditKey: stri
   if (parsed.c !== credentials || parsed.a !== auditKey) throw new Error('Written environment file failed the Node --env-file round trip.');
 }
 
-async function run(): Promise<number> {
-  let args;
+export interface SetupRunOptions {
+  argv: string[];
+  input: Readable & { isTTY?: boolean; setRawMode?: (enabled: boolean) => void };
+  output: Writable;
+  isTTY: boolean;
+  fetchImpl?: typeof fetch;
+  startStack?: () => Promise<boolean>;
+  openBrowser?: () => Promise<boolean>;
+  now?: () => number;
+  projectRoot?: string;
+}
+
+export async function runSetup(options: SetupRunOptions): Promise<number> {
+  const log = (message: string) => options.output.write(`${message}\n`);
+  const now = options.now?.() ?? Date.now();
+  let args: ReturnType<typeof parseArgs>;
   try {
-    args = parseArgs(process.argv.slice(2), ['env', 'key-dir'], ['yes', 'check', 'force', 'reset-state', 'no-color', 'help']);
+    args = parseArgs(options.argv, ['env', 'key-dir'], [
+      'yes', 'check', 'force', 'reset-state', 'no-color', 'help', 'advanced', 'on-chain-demo', 'start', 'open',
+    ]);
     if (args.positionals.length) throw new Error(`Unexpected argument: ${args.positionals[0]}`);
     if (args.flags.has('yes') && args.flags.has('check')) throw new Error('--yes and --check cannot be combined.');
     if (args.flags.has('check') && args.flags.has('reset-state')) throw new Error('--check and --reset-state cannot be combined.');
-  } catch (error) {
-    console.error(`[ASGUARD setup] ${safeError(error)}\n${HELP}`);
-    return 2;
-  }
-  if (args.flags.has('help')) { console.log(HELP); return 0; }
-  if (!nodeVersionValid()) { console.error('[ASGUARD setup] Requires Node.js 20.9.0 or later.'); return 1; }
-  const envPath = path.resolve(args.values.get('env') || '.env');
-  const keyDirectory = path.resolve(args.values.get('key-dir') || '.asguard');
-  if (args.flags.has('check')) {
-    try { return checkConfiguration(envPath); } catch (error) { console.error(`[ASGUARD setup] ${safeError(error)}`); return 1; }
-  }
-  if (!args.flags.has('yes') && !process.stdin.isTTY) {
-    console.error('[ASGUARD setup] Interactive setup requires a TTY; use --yes for safe defaults or --check to validate.');
-    return 2;
-  }
-  const env = readEnvFile(envPath);
-  if (args.flags.has('yes')) {
-    try {
-      const keys = [
-        'ASGUARD_API_CREDENTIALS', 'ASGUARD_AUDIT_KEY', 'ASGUARD_ATTESTATION_PRIVATE_KEY_PATH',
-        'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', 'ASGUARD_NEAR_NETWORK', 'ASGUARD_PORT',
-        'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER', 'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT',
-        'ASGUARD_DEMO_TIDEPOOL_SETTLE', 'ASGUARD_DEMO_TIDEPOOL_FAUCET',
-      ];
-      const before = new Map(keys.map((key) => [key, env.getValue(key)]));
-      const oldCredentials = credentialsByRole(env.getValue('ASGUARD_API_CREDENTIALS'));
-      const runtimeToken = args.flags.has('force') || !oldCredentials.runtime ? uniqueSecret([]) : oldCredentials.runtime;
-      const dashboardToken = args.flags.has('force') || !oldCredentials.dashboard
-        ? uniqueSecret([runtimeToken]) : oldCredentials.dashboard;
-      const originalAudit = env.getValue('ASGUARD_AUDIT_KEY');
-      const oldAudit = args.flags.has('force') ? undefined : originalAudit;
-      const auditKey = !oldAudit || isUnsetValue(oldAudit) || Buffer.byteLength(oldAudit, 'utf8') < 32
-        || oldAudit === runtimeToken || oldAudit === dashboardToken
-        ? uniqueSecret([runtimeToken, dashboardToken]) : oldAudit;
-      const archivedByReset = args.flags.has('reset-state') ? archiveAllState(env) : [];
-      if (originalAudit !== auditKey && !args.flags.has('reset-state')) archiveAuditChainForKeyRotation(env);
-      else if (!args.flags.has('reset-state') && !env.getValue('ASGUARD_STATE_DIR')?.trim()
-        && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32) {
-        console.log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
-      }
-      const credentials = JSON.stringify([
-        { id: 'runtime-local', token: runtimeToken, roles: ['runtime'] },
-        { id: 'dashboard-local', token: dashboardToken, roles: ['admin', 'operator', 'auditor'] },
-      ]);
-      env.setValue('ASGUARD_API_CREDENTIALS', credentials);
-      env.setValue('ASGUARD_AUDIT_KEY', auditKey);
-      const files = keyPaths(keyDirectory);
-      let pairValid = false;
-      if (!args.flags.has('force') && fs.existsSync(files.privatePath) && fs.existsSync(files.publicPath)) {
-        try { validateApprovalKeyPair(files.privatePath, files.publicPath); pairValid = true; } catch { pairValid = false; }
-      }
-      if (!pairValid) {
-        backupFile(files.privatePath);
-        backupFile(files.publicPath);
-        generateAttestationKeyPair(keyDirectory);
-      }
-      env.setValue('ASGUARD_ATTESTATION_PRIVATE_KEY_PATH', relativePosix(files.privatePath));
-      env.setValue('ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', relativePosix(files.publicPath));
-      const configuredNetwork = env.getValue('ASGUARD_NEAR_NETWORK');
-      const network = isUnsetValue(configuredNetwork) ? 'testnet' : configuredNetwork || 'testnet';
-      validateNetwork(network);
-      const intentsDefaults = nearIntentsDefaults(network as 'testnet' | 'mainnet');
-      env.setValue('ASGUARD_NEAR_NETWORK', network);
-      env.setValue('ASGUARD_PORT', isUnsetValue(env.getValue('ASGUARD_PORT')) ? '8080' : env.getValue('ASGUARD_PORT') || '8080');
-      env.setValue('ASGUARD_HOST', isUnsetValue(env.getValue('ASGUARD_HOST')) ? 'localhost' : env.getValue('ASGUARD_HOST') || 'localhost');
-      env.setValue('ASGUARD_ALLOWED_ORIGINS', isUnsetValue(env.getValue('ASGUARD_ALLOWED_ORIGINS')) ? 'http://localhost:3000' : env.getValue('ASGUARD_ALLOWED_ORIGINS') || 'http://localhost:3000');
-      env.setValue('ASGUARD_API_URL', isUnsetValue(env.getValue('ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('ASGUARD_API_URL') || 'http://localhost:8080');
-      env.setValue('NEXT_PUBLIC_ASGUARD_API_URL', isUnsetValue(env.getValue('NEXT_PUBLIC_ASGUARD_API_URL')) ? 'http://localhost:8080' : env.getValue('NEXT_PUBLIC_ASGUARD_API_URL') || 'http://localhost:8080');
-      const currentRpcUrl = env.getValue('ASGUARD_NEAR_RPC_URL');
-      const knownRpcUrls = ['https://rpc.testnet.near.org', 'https://rpc.mainnet.near.org'];
-      env.setValue('ASGUARD_NEAR_RPC_URL', isUnsetValue(currentRpcUrl) || knownRpcUrls.includes(currentRpcUrl || '')
-        ? nearRpcDefault(network as 'testnet' | 'mainnet') : currentRpcUrl || nearRpcDefault(network as 'testnet' | 'mainnet'));
-      env.setValue('ASGUARD_NEAR_INTENTS_API_URL', intentsDefaults.apiUrl);
-      env.setValue('ASGUARD_NEAR_INTENTS_VERIFIER', intentsDefaults.verifier);
-      if (isUnsetValue(env.getValue('ASGUARD_AI_ENABLED'))) env.setValue('ASGUARD_AI_ENABLED', 'false');
-      if (isUnsetValue(env.getValue('ASGUARD_DEMO_SUBMIT'))) env.setValue('ASGUARD_DEMO_SUBMIT', 'false');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_SETTLE', 'false');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_FAUCET', 'false');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID', '');
-      env.setValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY', '');
-      const intended = {
-        credentials,
-        auditKey,
-        privatePath: files.privatePath,
-        publicPath: files.publicPath,
-        port: env.getValue('ASGUARD_PORT') || '',
-        network,
-        rpcUrl: env.getValue('ASGUARD_NEAR_RPC_URL') || '',
-        intentsUrl: env.getValue('ASGUARD_NEAR_INTENTS_API_URL') || '',
-      };
-      validateSetupValues(intended);
-      writeEnvFile(envPath, env);
-      verifyNodeEnvFile(envPath, credentials, auditKey);
-      fs.mkdirSync(keyDirectory, { recursive: true, mode: 0o700 });
-      if (process.platform !== 'win32') {
-        fs.chmodSync(files.privatePath, 0o600);
-        fs.chmodSync(files.publicPath, 0o644);
-      }
-      for (const key of keys) {
-        const status = before.get(key) === env.getValue(key) ? 'unchanged' : before.get(key) === undefined ? 'generated' : 'set';
-        console.log(`${key}: ${status}`);
-      }
-      console.log(`Attestation key pair: ${pairValid ? 'kept' : 'generated'}`);
-      console.log(writeDashboardToken(path.join(keyDirectory, 'dashboard-token.txt'), dashboardToken));
-      if (archivedByReset.length) console.log(`Archived state files:\n${archivedByReset.join('\n')}`);
-      console.log('Setup complete.');
-      return 0;
-    } catch (error) {
-      console.error(`[ASGUARD setup] ${safeError(error)}`);
-      return 1;
+    if (args.flags.has('on-chain-demo') && args.flags.has('check')) throw new Error('--on-chain-demo cannot be combined with --check.');
+    if (args.flags.has('yes') && args.flags.has('advanced')) throw new Error('--advanced requires interactive setup and cannot be combined with --yes.');
+    if (args.flags.has('check') && ['force', 'advanced', 'on-chain-demo', 'start', 'open'].some((flag) => args.flags.has(flag))) {
+      throw new Error('--check cannot be combined with setup or startup options.');
     }
+  } catch (error) {
+    log(`[ASGUARD setup] ${safeError(error)}\n${HELP}`);
+    return 2;
   }
+
+  if (args.flags.has('help')) { log(HELP.trimEnd()); return 0; }
+  if (!nodeVersionValid()) { log('[ASGUARD setup] Requires Node.js 20.9.0 or later.'); return 1; }
+
+  const projectDirectory = path.resolve(options.projectRoot || process.cwd());
+  const envPath = path.resolve(projectDirectory, args.values.get('env') || '.env');
+  const keyDirectory = path.resolve(projectDirectory, args.values.get('key-dir') || '.asguard');
+  const fetchImpl = options.fetchImpl || fetch;
+  if (args.flags.has('check')) {
+    try { return checkConfiguration(envPath, log); } catch (error) { log(`[ASGUARD setup] ${safeError(error)}`); return 1; }
+  }
+  if (!args.flags.has('yes') && !options.isTTY) {
+    log('[ASGUARD setup] Interactive setup requires a TTY; use --yes for safe defaults or --check to validate.');
+    return 2;
+  }
+
+  let env: EnvFile;
+  try { env = readEnvFile(envPath); } catch (error) {
+    log(`[ASGUARD setup] ${safeError(error)}`);
+    return 1;
+  }
+  const existingConfigurationIsValid = fs.existsSync(envPath) && configurationIsValid(env, projectDirectory);
+  const keysToReport = [
+    'ASGUARD_API_CREDENTIALS', 'ASGUARD_AUDIT_KEY', 'ASGUARD_ATTESTATION_PRIVATE_KEY_PATH',
+    'ASGUARD_ATTESTATION_PUBLIC_KEY_PATH', 'ASGUARD_NEAR_NETWORK', 'ASGUARD_PORT',
+    'ASGUARD_NEAR_RPC_URL', 'ASGUARD_NEAR_INTENTS_API_URL', 'ASGUARD_NEAR_INTENTS_VERIFIER',
+    'ASGUARD_AI_ENABLED', 'ASGUARD_DEMO_SUBMIT', 'ASGUARD_DEMO_TIDEPOOL_SETTLE', 'ASGUARD_DEMO_TIDEPOOL_FAUCET',
+  ];
+  const before = new Map(keysToReport.map((key) => [key, env.getValue(key)]));
+
   try {
-    return await interactive(env, envPath, keyDirectory, args.flags.has('force'), args.flags.has('no-color'), args.flags.has('reset-state'));
+    const auditKey = env.getValue('ASGUARD_AUDIT_KEY') || '';
+    const auditKeyValid = Buffer.byteLength(auditKey, 'utf8') >= 32
+      && !validCredentialsFrom(env.getValue('ASGUARD_API_CREDENTIALS')).some((credential) => credential.token === auditKey);
+    if (!args.flags.has('reset-state') && !args.flags.has('force') && auditKeyValid) {
+      try { stateIntegrityCheck(env); } catch (error) {
+        log(`[ASGUARD setup] ${safeError(error)} Run npm run setup -- --reset-state to archive the incompatible state.`);
+        return 1;
+      }
+    }
+
+    if (args.flags.has('yes')) {
+      const archived = args.flags.has('reset-state') ? archiveAllState(env, now) : [];
+      const originalAudit = env.getValue('ASGUARD_AUDIT_KEY');
+      const prepared = prepareConfiguration(env, keyDirectory, projectDirectory, args.flags.has('force'));
+      if (args.flags.has('on-chain-demo')) {
+        if (env.getValue('ASGUARD_NEAR_NETWORK') !== 'testnet') {
+          throw new Error('--on-chain-demo is available only on testnet.');
+        }
+        const probe = await probeTidepool(fetchImpl);
+        log(probe.available ? 'Tidepool testnet: reachable.' : `Tidepool testnet: not reachable right now (${probe.reason || 'could not reach the service'}); preparing the demo wallet anyway.`);
+        enableTidepoolWallet(env, log, args.flags.has('force'));
+      } else {
+        disableTidepoolWallet(env);
+      }
+      if (!args.flags.has('reset-state') && !env.getValue('ASGUARD_STATE_DIR')?.trim()
+        && !isUnsetValue(originalAudit) && Buffer.byteLength(originalAudit || '', 'utf8') >= 32
+        && !prepared.auditChanged) {
+        log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
+      }
+      commitConfiguration(env, envPath, keyDirectory, projectDirectory, prepared, args.flags.has('reset-state'), log, now);
+      for (const key of keysToReport) {
+        const status = before.get(key) === env.getValue(key) ? 'unchanged' : before.get(key) === undefined ? 'generated' : 'set';
+        log(`${key}: ${status}`);
+      }
+      log(`Attestation key pair: ${prepared.generateKeys ? 'generated' : 'kept'}`);
+      if (archived.length) log(`Archived state files:\n${archived.join('\n')}`);
+      log('Setup complete.');
+      if (args.flags.has('start') || args.flags.has('open')) {
+        if (!options.startStack || !await options.startStack()) {
+          log('Could not start the dev stack. Start it manually with: npm run dev');
+          return 1;
+        }
+        log('ASGUARD dev stack start requested successfully.');
+        if (args.flags.has('open') && !await (options.openBrowser || openDashboard)()) {
+          log('Open manually: http://localhost:3000');
+        }
+      }
+      return 0;
+    }
+
+    const prompter = createPrompter({
+      input: options.input, output: options.output, isTTY: options.isTTY, noColor: args.flags.has('no-color'),
+    });
+    if (!await prompter.confirm('Set up ASGUARD with safe local defaults?', true)) {
+      log('Nothing changed.');
+      return 0;
+    }
+    if (fs.existsSync(envPath)) {
+      log(existingConfigurationIsValid
+        ? 'Existing configuration is valid; preserving configured values.'
+        : 'Existing configuration has gaps; preserving valid values and filling missing settings.');
+    }
+
+    let archived: string[] = [];
+    if (args.flags.has('reset-state')) {
+      await prompter.confirmTyped('Type reset to archive existing state', 'reset');
+      archived = archiveAllState(env, now);
+    }
+    let prepared = prepareConfiguration(env, keyDirectory, projectDirectory);
+    if (args.flags.has('force')) {
+      await prompter.confirmTyped('Type regenerate to replace secrets and keys', 'regenerate');
+      prepared = prepareConfiguration(env, keyDirectory, projectDirectory, true);
+    }
+    if (args.flags.has('on-chain-demo') && env.getValue('ASGUARD_NEAR_NETWORK') !== 'testnet') {
+      throw new Error('--on-chain-demo is available only on testnet.');
+    }
+    if (env.getValue('ASGUARD_NEAR_NETWORK') === 'testnet' && !tidepoolWalletConfigured(env)) {
+      if (args.flags.has('on-chain-demo')) {
+        const probe = await probeTidepool(fetchImpl);
+        log(probe.available ? 'Tidepool testnet: reachable.' : `Tidepool testnet: not reachable right now (${probe.reason || 'could not reach the service'}); preparing the demo wallet anyway.`);
+        enableTidepoolWallet(env, log, args.flags.has('force'));
+      } else {
+        await promptForTidepoolWallet(env, prompter, fetchImpl, log, args.flags.has('force'));
+      }
+    } else if (env.getValue('ASGUARD_NEAR_NETWORK') !== 'testnet') {
+      disableTidepoolWallet(env);
+    }
+
+    if (args.flags.has('advanced') || await prompter.confirm('Configure advanced options?', false)) {
+      const result = await configureAdvanced(
+        env, prompter, prepared, keyDirectory, projectDirectory, args.flags.has('no-color'), fetchImpl, log,
+      );
+      if (result.status !== 0) return result.status;
+      prepared = result.prepared;
+    }
+    log(setupSummary(env, prepared).join('\n'));
+    if (!await prompter.confirm('Write this configuration to disk?', true)) {
+      log('Configuration was not written.');
+      return 0;
+    }
+    if (prepared.auditChanged && !args.flags.has('reset-state')
+      && !env.getValue('ASGUARD_STATE_DIR')?.trim()
+      && !isUnsetValue(before.get('ASGUARD_AUDIT_KEY'))) {
+      log('State is stored in ~/.asguard (legacy location). Run npm run setup -- --reset-state to start fresh in a project-local state directory.');
+    }
+    commitConfiguration(env, envPath, keyDirectory, projectDirectory, prepared, args.flags.has('reset-state'), log, now);
+    if (archived.length) log(`Archived state files:\n${archived.join('\n')}`);
+    log('Setup complete. Start later with: npm run dev');
+    if (args.flags.has('start') || args.flags.has('open')) {
+      if (!options.startStack || !await options.startStack()) {
+        log('Could not start the dev stack. Start it manually with: npm run dev');
+        return 1;
+      }
+      log('ASGUARD dev stack start requested successfully.');
+      if (args.flags.has('open') && !await (options.openBrowser || openDashboard)()) {
+        log('Open manually: http://localhost:3000');
+      }
+    }
+    return 0;
   } catch (error) {
     const code = error && typeof error === 'object' && 'exitCode' in error ? Number(error.exitCode) : 1;
-    if (code !== 130) console.error(`[ASGUARD setup] ${safeError(error)}`);
+    if (code !== 130) log(`[ASGUARD setup] ${safeError(error)}`);
     return code === 130 ? 130 : 1;
   }
 }
 
-void run().then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-  console.error(`[ASGUARD setup] ${safeError(error)}`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  const input = process.stdin as Readable & { isTTY?: boolean; setRawMode?: (enabled: boolean) => void };
+  void runSetup({
+    argv: process.argv.slice(2),
+    input,
+    output: process.stdout,
+    isTTY: Boolean(process.stdin.isTTY),
+    startStack: startDevStack,
+    openBrowser: openDashboard,
+  }).then((code) => { process.exitCode = code; }).catch((error: unknown) => {
+    console.error(`[ASGUARD setup] ${safeError(error)}`);
+    process.exitCode = 1;
+  });
+}

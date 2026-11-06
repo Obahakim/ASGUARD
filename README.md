@@ -29,11 +29,11 @@ Timeouts, denials, and invalid or changed payloads fail closed. The backend keep
 
 1. Install Node.js 20.9 or newer.
 2. Install dependencies: `npm install`.
-3. Run `npm run setup`. The wizard writes local configuration and keys; on testnet it can optionally create a Tidepool demo key and enable faucet/settlement. At the end, interactive setup can start the stack and optionally open the browser.
-4. If you skipped startup, run `npm run dev` (backend on port 8080 and dashboard on port 3000).
+3. Run `npm run setup`. The four-prompt quick path preserves valid settings and uses safe local defaults; Tidepool wallet creation is opt-in. Use `npm run setup -- --advanced` for endpoint, AI, webhook, and demo settings, or `npm run setup -- --on-chain-demo` to explicitly prepare the testnet wallet.
+4. Run `npm run dev` (backend on port 8080 and dashboard on port 3000), or use `npm run setup -- --start` to start it from setup.
 5. Open [http://localhost:3000](http://localhost:3000) and sign in with the dashboard token at `.asguard/dashboard-token.txt`.
 
-The setup wizard's safe `--yes` mode never creates a demo wallet, enables settlement, starts the server, or opens a browser.
+The setup wizard's safe `--yes` mode never creates a demo wallet, enables settlement, starts the server, or opens a browser. Use `npm run setup -- --check` to validate configuration without writing; `--force` rotates local secrets and keys after interactive confirmation, while `--yes --force` explicitly requests non-interactive rotation.
 
 ## Try the demos
 

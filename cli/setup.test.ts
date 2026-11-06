@@ -3,20 +3,48 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { EnvFile } from './lib/envFile';
 import { generateAttestationKeyPair, randomSecretHex } from './lib/generate';
+import { runSetup as runSetupWithOptions } from './setup';
 import { parseApiCredentials } from '../server/auth';
 import { AuditChain } from '../server/auditChain';
+import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
+import { nearDemoKeyMatches } from './lib/nearDemoKey';
 
 const root = process.cwd();
 const entry = path.join(root, 'cli', 'setup.ts');
 
+function promptHarness(answers: string[]) {
+  const input = new PassThrough();
+  let transcript = '';
+  let promptCount = 0;
+  const output = new Writable({
+    write(chunk, _encoding, callback) {
+      const text = chunk.toString();
+      transcript += text;
+      if (text.endsWith(': ')) {
+        promptCount += 1;
+        input.write(`${answers.shift() || ''}\n`);
+      }
+      callback();
+    },
+  });
+  return { input, output, get transcript() { return transcript; }, get promptCount() { return promptCount; } };
+}
+
 function runSetup(args: string[], envOverrides: NodeJS.ProcessEnv = {}) {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-home-'));
+  const envIndex = args.indexOf('--env');
+  const cwd = envIndex >= 0 ? path.dirname(path.resolve(args[envIndex + 1] || '.')) : root;
   try {
-    return spawnSync(process.execPath, ['--require', './scripts/test-preload.cjs', '--import', 'tsx', entry, ...args], {
-      cwd: root, encoding: 'utf8', shell: false, env: { ...process.env, ...envOverrides, HOME: testHome, USERPROFILE: testHome },
+    return spawnSync(process.execPath, [
+      '--require', path.join(root, 'scripts', 'test-preload.cjs'),
+      '--import', pathToFileURL(path.join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href, entry, ...args,
+    ], {
+      cwd, encoding: 'utf8', shell: false, env: { ...process.env, ...envOverrides, HOME: testHome, USERPROFILE: testHome },
     });
   } finally {
     fs.rmSync(testHome, { recursive: true, force: true });
@@ -84,6 +112,109 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
   }
 });
 
+test('interactive setup quick path uses safe defaults and writes only after confirmation', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-quick-'));
+  const prompts = promptHarness(['', '', '', '']);
+  try {
+    const status = await runSetupWithOptions({
+      argv: [],
+      input: prompts.input,
+      output: prompts.output,
+      isTTY: true,
+      projectRoot: directory,
+      fetchImpl: async () => new Response('', { status: 503 }),
+      now: () => 1_700_000_000_000,
+    });
+    assert.equal(status, 0, prompts.transcript);
+    assert.equal(prompts.promptCount, 4);
+    assert.match(prompts.transcript, /Tidepool testnet: not reachable right now/);
+    assert.match(prompts.transcript, /Setup complete\./);
+    assert.equal(fs.existsSync(path.join(directory, '.env')), true);
+    assert.equal(fs.existsSync(path.join(directory, '.asguard', 'dashboard-token.txt')), true);
+    const config = EnvFile.parse(fs.readFileSync(path.join(directory, '.env'), 'utf8'));
+    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
+    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
+    assert.equal(prompts.transcript.includes('Configuration was not written.'), false);
+  } finally {
+    prompts.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('interactive setup cancellation leaves the project untouched', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-cancel-'));
+  const prompts = promptHarness(['n']);
+  try {
+    const status = await runSetupWithOptions({
+      argv: [],
+      input: prompts.input,
+      output: prompts.output,
+      isTTY: true,
+      projectRoot: directory,
+      fetchImpl: async () => { throw new Error('offline'); },
+    });
+    assert.equal(status, 0);
+    assert.equal(fs.existsSync(path.join(directory, '.env')), false);
+    assert.equal(fs.existsSync(path.join(directory, '.asguard')), false);
+  } finally {
+    prompts.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('--yes --on-chain-demo enables only a valid testnet wallet without exposing its key', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-tidepool-'));
+  const streams = promptHarness([]);
+  try {
+    const status = await runSetupWithOptions({
+      argv: ['--yes', '--on-chain-demo'],
+      input: streams.input,
+      output: streams.output,
+      isTTY: false,
+      projectRoot: directory,
+      fetchImpl: async () => new Response(JSON.stringify({
+        network: 'testnet',
+        verifier: nearIntentsDefaults('testnet', true).verifier,
+      }), { headers: { 'content-type': 'application/json' } }),
+    });
+    assert.equal(status, 0, streams.transcript);
+    const env = EnvFile.parse(fs.readFileSync(path.join(directory, '.env'), 'utf8'));
+    const accountId = env.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '';
+    const privateKey = env.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '';
+    assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'true');
+    assert.equal(env.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'true');
+    assert.equal(nearDemoKeyMatches(privateKey, accountId), true);
+    assert.equal(streams.transcript.includes(privateKey), false);
+    assert.equal(streams.transcript.includes('Setup complete.'), true);
+  } finally {
+    streams.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('--yes --force rotates dashboard credentials and their local token file together', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-force-'));
+  const envPath = path.join(directory, '.env');
+  const keyDirectory = path.join(directory, '.asguard');
+  const dashboardFile = path.join(keyDirectory, 'dashboard-token.txt');
+  try {
+    assert.equal(runSetup(['--yes', '--env', envPath, '--key-dir', keyDirectory]).status, 0);
+    const original = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    const originalToken = parseApiCredentials(original.getValue('ASGUARD_API_CREDENTIALS'))
+      .find((credential) => credential.roles.includes('admin'))?.token;
+    const rotated = runSetup(['--yes', '--force', '--env', envPath, '--key-dir', keyDirectory]);
+    assert.equal(rotated.status, 0, rotated.stderr);
+    const updated = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    const updatedToken = parseApiCredentials(updated.getValue('ASGUARD_API_CREDENTIALS'))
+      .find((credential) => credential.roles.includes('admin'))?.token;
+    assert.notEqual(updatedToken, originalToken);
+    assert.equal(fs.readFileSync(dashboardFile, 'utf8'), updatedToken);
+    assert.equal(rotated.stdout.includes(updatedToken || ''), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('check fails for placeholders, short tokens, mismatched keypairs, and non-HTTPS RPC', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-invalid-'));
   try {
@@ -145,6 +276,32 @@ test('--yes applies official endpoint defaults and never retains a Tidepool demo
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '', '');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '', '');
     assert.equal(result.stdout.includes('dev stack start requested'), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('--yes preserves valid credentials while removing malformed entries', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-credentials-'));
+  const envPath = path.join(directory, '.env');
+  const runtimeToken = randomSecretHex();
+  const dashboardToken = randomSecretHex();
+  try {
+    const env = EnvFile.parse('');
+    env.setValue('ASGUARD_API_CREDENTIALS', JSON.stringify([
+      { id: 'runtime', token: runtimeToken, roles: ['runtime'] },
+      { id: 'dashboard', token: dashboardToken, roles: ['admin'] },
+      { id: 'invalid' },
+    ]));
+    env.setValue('ASGUARD_AUDIT_KEY', randomSecretHex());
+    fs.writeFileSync(envPath, env.serialize());
+    const result = runSetup(['--yes', '--env', envPath, '--key-dir', path.join(directory, '.asguard')]);
+    assert.equal(result.status, 0, result.stderr);
+    const configured = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
+    const credentials = parseApiCredentials(configured.getValue('ASGUARD_API_CREDENTIALS'));
+    assert.equal(credentials.length, 2);
+    assert.equal(credentials.some((credential) => credential.token === runtimeToken), true);
+    assert.equal(credentials.some((credential) => credential.token === dashboardToken), true);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
