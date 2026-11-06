@@ -351,7 +351,7 @@ async function getPublicKey(baseUrl: string, prompter: Prompter, project: string
     'fetch from ASGUARD server',
     'path to existing PEM',
     'paste PEM',
-  ]);
+  ], { defaultIndex: 0 });
   if (source === 'fetch from ASGUARD server') {
     const parsed = await fetchPublicKey(baseUrl);
     console.log(`Attestation public-key SHA-256 fingerprint: ${parsed.fingerprint}`);
@@ -383,7 +383,7 @@ async function getPublicKey(baseUrl: string, prompter: Prompter, project: string
 function chooseTarget(project: string, name: string, prompter: Prompter): Promise<SelectedTarget | undefined> {
   const target = path.join(project, name);
   if (!fs.existsSync(target)) return Promise.resolve({ path: target, overwrite: false });
-  return prompter.choose(`${name} already exists:`, ['skip', 'overwrite', `write ${name}.new`]).then((choice) => {
+  return prompter.choose(`${name} already exists:`, ['skip', 'overwrite', `write ${name}.new`], { defaultIndex: 0 }).then((choice) => {
     if (choice === 'skip') return undefined;
     return choice === 'overwrite' ? { path: target, overwrite: true } : { path: `${target}.new`, overwrite: false };
   });
@@ -525,7 +525,8 @@ async function interactiveConnect(
   patchPath?: string,
 ): Promise<number> {
   const prompter = createPrompter({ input: process.stdin, output: process.stdout, isTTY: Boolean(process.stdin.isTTY), noColor });
-  const enteredBaseUrl = await prompter.askSecret('ASGUARD base URL (press Enter for http://localhost:8080)', {
+  const enteredBaseUrl = await prompter.ask('ASGUARD base URL', {
+    default: 'http://localhost:8080',
     validate: (value) => {
       try { validateEndpoint('ASGUARD base URL', value || 'http://localhost:8080'); return undefined; } catch (error) { return safeError(error); }
     },
@@ -545,9 +546,9 @@ async function interactiveConnect(
   const defaultId = metadata.packageName.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
   const agentId = await prompter.ask('Agent ID', { default: defaultId, validate: validateAgentId });
   const agentName = await prompter.ask('Agent name', { default: metadata.packageName || path.basename(project), validate: validateLabel });
-  const network = await prompter.choose('NEAR network:', ['near:testnet', 'near:mainnet']);
+  const network = await prompter.choose('NEAR network:', ['near:testnet', 'near:mainnet'], { defaultIndex: 0 });
   if (network === 'near:mainnet') {
-    await prompter.ask('Type mainnet to confirm', { validate: (value) => value === 'mainnet' ? undefined : 'Type mainnet to continue.' });
+    await prompter.confirmTyped('Type mainnet to confirm', 'mainnet');
   }
   const accountsValue = await prompter.ask('Comma-separated public NEAR account IDs', { validate: validateAccounts });
   const accounts = accountsValue.split(',').map((account) => account.trim());

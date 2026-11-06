@@ -219,7 +219,7 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
 
   if (await prompter.confirm('Configure AI advisory (annotate-only)?', false)) {
     env.setValue('ASGUARD_AI_ENABLED', 'true');
-    const mode = await prompter.choose('AI provider:', ['heuristic (no key needed)', 'live NEAR AI Cloud']);
+    const mode = await prompter.choose('AI provider:', ['heuristic (no key needed)', 'live NEAR AI Cloud'], { defaultIndex: 0 });
     if (mode.startsWith('heuristic')) {
       env.setValue('ASGUARD_AI_PROVIDER', 'heuristic');
       env.setValue('ASGUARD_AI_API_URL', '');
@@ -227,7 +227,7 @@ async function configureOptional(env: EnvFile, prompter: Prompter, network: stri
       env.setValue('ASGUARD_AI_MODEL', '');
     } else {
       console.log('Get a key at https://cloud.near.ai. Verify endpoint details at https://docs.near.ai.');
-      const endpoint = await prompter.askSecret('Full chat-completions URL', { validate: (value) => {
+      const endpoint = await prompter.ask('Full chat-completions URL', { validate: (value) => {
         try { validateNearAiEndpoint(value); return undefined; } catch (error) { return safeError(error); }
       } });
       const apiKey = await prompter.askSecret('NEAR AI API key');
@@ -367,12 +367,12 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   let regenerate = force;
   if (fs.existsSync(envPath)) {
     console.log(`Existing environment file detected: ${envPath}`);
-    if (force) await prompter.ask('Type regenerate to replace secrets', { validate: (value) => value === 'regenerate' ? undefined : 'Type regenerate to continue.' });
+    if (force) await prompter.confirmTyped('Type regenerate to replace secrets', 'regenerate');
     else {
-      const choice = await prompter.choose('Configuration mode:', ['keep valid values and fill only gaps', 'regenerate secrets']);
+      const choice = await prompter.choose('Configuration mode:', ['keep valid values and fill only gaps', 'regenerate secrets'], { defaultIndex: 0 });
       if (choice === 'regenerate secrets') {
         regenerate = true;
-        await prompter.ask('Type regenerate to replace secrets', { validate: (value) => value === 'regenerate' ? undefined : 'Type regenerate to continue.' });
+        await prompter.confirmTyped('Type regenerate to replace secrets', 'regenerate');
       }
     }
   }
@@ -428,7 +428,7 @@ async function interactive(env: EnvFile, envPath: string, keyDirectory: string, 
   });
   if (network === 'mainnet') {
     console.log('Demos refuse mainnet. Type mainnet to confirm this production-network configuration.');
-    await prompter.ask('Confirm network', { validate: (value) => value === 'mainnet' ? undefined : 'Type mainnet to continue.' });
+    await prompter.confirmTyped('Confirm network', 'mainnet');
   }
   env.setValue('ASGUARD_NEAR_NETWORK', network);
   const rpcDefault = nearRpcDefault(network as 'testnet' | 'mainnet');
