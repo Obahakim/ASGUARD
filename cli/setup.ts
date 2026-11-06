@@ -806,7 +806,7 @@ async function logReadyScreen(
   const tokenPath = path.join(keyDirectory, 'dashboard-token.txt');
   const token = interactiveTTY && fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : '';
   log(token ? `Dashboard token: ${token}` : `Dashboard token: ${relativePosix(tokenPath, projectRoot)} (available only in a local terminal).`);
-  log('Stop the background stack with: npm run stop');
+  log('Stop the dev stack with: npm run stop');
   log('Demo commands: npm run demo:near:approve, npm run demo:near:hitl');
   const probe = await probeTidepool(fetchImpl);
   if (probe.available) {

@@ -96,6 +96,9 @@ test('start is idempotent, writes a private PID file, and stop removes it after 
     assert.doesNotThrow(() => new Date(metadata.timestamp).toISOString());
     if (process.platform !== 'win32') assert.equal(fs.statSync(pidPath).mode & 0o777, 0o600);
     assert.equal(lines.some((line) => line.startsWith('READY:')), true);
+    if (process.platform === 'win32') {
+      assert.equal(lines.some((line) => line.includes('separate PowerShell window') && line.includes('.asguard\\dev.log')), true);
+    }
     assert.equal(await startDevStack({ ...options, launch: async () => { throw new Error('duplicate start'); } }), true);
     assert.equal(launches, 1);
 

@@ -243,16 +243,39 @@ export async function waitForStackReady(options: StackReadinessOptions): Promise
 }
 
 async function launchBackgroundStack(projectRoot: string, logPath: string): Promise<number> {
+  const isWindows = process.platform === 'win32';
+  if (isWindows) {
+    const powerShellLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
+    const runCommand = `Set-Location -LiteralPath ${powerShellLiteral(projectRoot)}; npm run dev *>&1 | Tee-Object -FilePath ${powerShellLiteral(logPath)} -Append`;
+    const encodedCommand = Buffer.from(runCommand, 'utf16le').toString('base64');
+    const launcherScript = `$process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+      + `-ArgumentList @('-NoProfile', '-EncodedCommand', '${encodedCommand}') `
+      + `-WorkingDirectory ${powerShellLiteral(projectRoot)} -PassThru; `
+      + '[Console]::Out.WriteLine($process.Id)';
+    const launcher = spawnSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command', launcherScript,
+    ], { cwd: projectRoot, encoding: 'utf8', shell: false, windowsHide: true });
+    if (launcher.error) throw launcher.error;
+    if (launcher.status !== 0) {
+      throw new Error(launcher.stderr.trim() || `Could not open the ASGUARD dev terminal (exit code ${launcher.status}).`);
+    }
+    const pid = Number(launcher.stdout.trim().split(/\r?\n/).at(-1));
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error('The ASGUARD dev terminal did not return a valid process ID.');
+    }
+    return pid;
+  }
+
   const npmExecPath = process.env.npm_execpath;
   const command = npmExecPath
     ? process.execPath
-    : process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
+    : isWindows ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   const args = npmExecPath
     ? [npmExecPath, 'run', 'dev']
-    : process.platform === 'win32' ? ['/d', '/s', '/c', 'npm run dev'] : ['run', 'dev'];
+    : isWindows ? ['/d', '/s', '/c', 'npm run dev'] : ['run', 'dev'];
   const descriptor = fs.openSync(logPath, 'a', 0o600);
   try {
-    if (process.platform !== 'win32') fs.chmodSync(logPath, 0o600);
+    if (!isWindows) fs.chmodSync(logPath, 0o600);
   } catch (error) {
     fs.closeSync(descriptor);
     throw error;
@@ -346,6 +369,9 @@ export async function startDevStack(options: StartDevStackOptions = {}): Promise
     prepareLog(files.log);
     log(`Starting ASGUARD; waiting up to ${Math.round((options.timeoutMs ?? START_TIMEOUT_MS) / 1000)} seconds for backend and dashboard readiness.`);
     const pid = await (options.launch || launchBackgroundStack)(projectRoot, files.log);
+    if (process.platform === 'win32') {
+      log(`Live npm run dev output is open in a separate PowerShell window and also saved to ${files.log}.`);
+    }
     try {
       writePid(files.pid, {
         pid,

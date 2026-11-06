@@ -30,7 +30,7 @@ Timeouts, denials, and invalid or changed payloads fail closed. The backend keep
 1. Install Node.js 20.9 or newer.
 2. Install dependencies: `npm install`.
 3. Run `npm run setup`. The four-prompt quick path preserves valid settings and uses safe local defaults; Tidepool wallet creation is opt-in. Use `npm run setup -- --advanced` for endpoint, AI, webhook, and demo settings, or `npm run setup -- --on-chain-demo` to explicitly prepare the testnet wallet.
-4. Run `npm run dev` (backend on port 8080 and dashboard on port 3000), or use `npm run setup -- --start` to start it from setup.
+4. Run `npm run dev` (backend on port 8080 and dashboard on port 3000), or accept the final startup prompt in `npm run setup` to start it there. On Windows, setup opens a visible PowerShell window with live dev output; the same output is saved to `.asguard/dev.log`.
 5. Open [http://localhost:3000](http://localhost:3000) and sign in with the dashboard token at `.asguard/dashboard-token.txt`.
 
 On the Operations view, review each observed agent as **Verified**, **Unverified**, or **Flagged as decoy**. Review decisions persist in the configured ASGUARD state directory; flagged agents cannot receive approval attestations. When NEAR AI advisory is enabled, saved statuses are included as untrusted context in its analyses.

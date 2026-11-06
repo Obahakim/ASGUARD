@@ -201,6 +201,36 @@ test('advanced setup no longer asks for a wallet-watch demo account', async () =
   }
 });
 
+test('advanced setup finishes after configuring an optional NEAR transfer demo', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-near-demo-finish-'));
+  const prompts = promptHarness(['y', 'n', 'n', 'n', 'n', 'n', 'y', 'asguarddev.near', 'asguarddemo.near', '', '', '', 'n', '', 'n']);
+  let starts = 0;
+  try {
+    const status = await runSetupWithOptions({
+      argv: ['--advanced'],
+      input: prompts.input,
+      output: prompts.output,
+      isTTY: true,
+      projectRoot: directory,
+      fetchImpl: async () => new Response('', { status: 503 }),
+      startStack: async () => { starts += 1; return true; },
+      openBrowser: async () => true,
+    });
+    assert.equal(status, 0, prompts.transcript);
+    assert.match(prompts.transcript, /Private key \(ed25519:\.\.\.\) or press Enter to fill later/);
+    assert.match(prompts.transcript, /Setup complete\./);
+    assert.match(prompts.transcript, /Start ASGUARD now\?/);
+    assert.equal(starts, 1, prompts.transcript);
+    assert.match(prompts.transcript, /ASGUARD dev stack is ready\./);
+    assert.match(prompts.transcript, /Backend: http:\/\/localhost:8080/);
+    const configured = EnvFile.parse(fs.readFileSync(path.join(directory, '.env'), 'utf8'));
+    assert.equal(configured.getValue('ASGUARD_DEMO_SUBMIT'), 'false');
+  } finally {
+    prompts.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('interactive setup cancellation leaves the project untouched', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-cancel-'));
   const prompts = promptHarness(['[EOF]']);
