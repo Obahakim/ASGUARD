@@ -5,6 +5,9 @@ export async function probeTidepool(
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 4_000,
 ): Promise<{ available: boolean; reason?: string }> {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) {
+    throw new Error('Tidepool probe timeout must be from 100 to 60000 milliseconds.');
+  }
   try {
     const health = await new TidepoolClient({ fetchImpl, timeoutMs }).health();
     if (!health || typeof health !== 'object'

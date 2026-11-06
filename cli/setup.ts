@@ -14,7 +14,8 @@ import { getApprovalPublicKey, validateApprovalKeyPair } from '../server/attesta
 import { parseApiCredentials } from '../server/auth';
 import { nearIntentsDefaults, nearRpcDefault } from '../server/aos/nearIntentsConfig';
 import { generateNearDemoKeyPair, nearDemoKeyMatches } from './lib/nearDemoKey';
-import { openDashboard, startDevStack } from './lib/setupActions';
+import { canOpenBrowser, getStackEndpoints } from './lib/devStack';
+import { offerPostSetupActions, openDashboard, startDevStack } from './lib/setupActions';
 import { AuditChain } from '../server/auditChain';
 import { resolveStatePath } from '../server/stateDir';
 import { probeTidepool } from './lib/tidepoolProbe';
@@ -559,7 +560,7 @@ async function promptForTidepoolWallet(
   const question = probe.available
     ? 'Enable the on-chain demo wallet? ASGUARD creates a local, testnet-only wallet so demo:onchain can settle a real testnet swap.'
     : 'The on-chain demo needs Tidepool, which is down at the moment. Prepare the demo wallet anyway so demo:onchain works when it is back?';
-  if (await prompter.confirm(question, false)) enableTidepoolWallet(env, log, rotate);
+  if (await prompter.confirm(question, true)) enableTidepoolWallet(env, log, rotate);
   else disableTidepoolWallet(env);
 }
 
@@ -738,6 +739,58 @@ function setupSummary(env: EnvFile, prepared: PreparedConfiguration): string[] {
   return rows.map(([name, value]) => `${name.padEnd(40)} ${value}`);
 }
 
+async function startOnRequest(
+  options: SetupRunOptions,
+  log: (message: string) => void,
+  openRequested: boolean,
+  env: EnvFile,
+  keyDirectory: string,
+  projectRoot: string,
+  fetchImpl: typeof fetch,
+  showToken: boolean,
+): Promise<boolean> {
+  if (!options.startStack || !await options.startStack()) {
+    log('The dev stack did not become ready. See .asguard/dev.log; stop it with npm run stop or run npm run dev manually.');
+    return false;
+  }
+  await logReadyScreen(env, keyDirectory, projectRoot, showToken, fetchImpl, log);
+  if (openRequested) {
+    if (!options.isTTY || !canOpenBrowser()) {
+      log('No interactive graphical browser is available. Open manually: http://localhost:3000');
+    } else if (!await (options.openBrowser || openDashboard)()) {
+      log('Could not open a browser. Open manually: http://localhost:3000');
+    }
+  }
+  return true;
+}
+
+async function logReadyScreen(
+  env: EnvFile,
+  keyDirectory: string,
+  projectRoot: string,
+  interactiveTTY: boolean,
+  fetchImpl: typeof fetch,
+  log: (message: string) => void,
+): Promise<void> {
+  const { backendUrl, frontendUrl: dashboardUrl } = getStackEndpoints(projectRoot);
+  log('ASGUARD dev stack is ready.');
+  log(`Backend: ${backendUrl}`);
+  log(`Dashboard: ${dashboardUrl}`);
+  const tokenPath = path.join(keyDirectory, 'dashboard-token.txt');
+  const token = interactiveTTY && fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : '';
+  log(token ? `Dashboard token: ${token}` : `Dashboard token: ${relativePosix(tokenPath, projectRoot)} (available only in a local terminal).`);
+  log('Stop the background stack with: npm run stop');
+  log('Demo commands: npm run demo:near:approve, npm run demo:near:hitl');
+  const probe = await probeTidepool(fetchImpl);
+  if (probe.available) {
+    log(tidepoolWalletConfigured(env)
+      ? 'Tidepool testnet is reachable. On-chain demo: npm run demo:onchain'
+      : 'Tidepool testnet is reachable. Prepare its testnet wallet with: npm run setup -- --on-chain-demo');
+  } else {
+    log(`Tidepool testnet is currently unavailable (${probe.reason || 'health check failed'}); its on-chain demo may not run.`);
+  }
+}
+
 function verifyNodeEnvFile(filePath: string, credentials: string, auditKey: string): void {
   const result = spawnSync(process.execPath, [
     '--env-file', filePath, '-e',
@@ -849,14 +902,10 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
       if (archived.length) log(`Archived state files:\n${archived.join('\n')}`);
       log('Setup complete.');
       if (args.flags.has('start') || args.flags.has('open')) {
-        if (!options.startStack || !await options.startStack()) {
-          log('Could not start the dev stack. Start it manually with: npm run dev');
-          return 1;
-        }
-        log('ASGUARD dev stack start requested successfully.');
-        if (args.flags.has('open') && !await (options.openBrowser || openDashboard)()) {
-          log('Open manually: http://localhost:3000');
-        }
+        if (!await startOnRequest(options, log, args.flags.has('open'), env, keyDirectory, projectDirectory, fetchImpl,
+          options.isTTY && !args.flags.has('yes'))) return 1;
+      } else {
+        log('Start later with: npm run dev');
       }
       return 0;
     }
@@ -864,10 +913,6 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
     const prompter = createPrompter({
       input: options.input, output: options.output, isTTY: options.isTTY, noColor: args.flags.has('no-color'),
     });
-    if (!await prompter.confirm('Set up ASGUARD with safe local defaults?', true)) {
-      log('Nothing changed.');
-      return 0;
-    }
     if (fs.existsSync(envPath)) {
       log(existingConfigurationIsValid
         ? 'Existing configuration is valid; preserving configured values.'
@@ -907,10 +952,6 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
       prepared = result.prepared;
     }
     log(setupSummary(env, prepared).join('\n'));
-    if (!await prompter.confirm('Write this configuration to disk?', true)) {
-      log('Configuration was not written.');
-      return 0;
-    }
     if (prepared.auditChanged && !args.flags.has('reset-state')
       && !env.getValue('ASGUARD_STATE_DIR')?.trim()
       && !isUnsetValue(before.get('ASGUARD_AUDIT_KEY'))) {
@@ -918,16 +959,21 @@ export async function runSetup(options: SetupRunOptions): Promise<number> {
     }
     commitConfiguration(env, envPath, keyDirectory, projectDirectory, prepared, args.flags.has('reset-state'), log, now);
     if (archived.length) log(`Archived state files:\n${archived.join('\n')}`);
-    log('Setup complete. Start later with: npm run dev');
+    log('Setup complete.');
     if (args.flags.has('start') || args.flags.has('open')) {
-      if (!options.startStack || !await options.startStack()) {
-        log('Could not start the dev stack. Start it manually with: npm run dev');
-        return 1;
-      }
-      log('ASGUARD dev stack start requested successfully.');
-      if (args.flags.has('open') && !await (options.openBrowser || openDashboard)()) {
-        log('Open manually: http://localhost:3000');
-      }
+      if (!await startOnRequest(options, log, args.flags.has('open'), env, keyDirectory, projectDirectory, fetchImpl,
+        options.isTTY)) return 1;
+    } else {
+      await offerPostSetupActions({
+        interactiveTTY: options.isTTY,
+        yes: false,
+        check: false,
+        prompter,
+        log,
+        startDevStack: options.startStack || (async () => false),
+        openDashboard: options.openBrowser || (async () => false),
+        onReady: () => logReadyScreen(env, keyDirectory, projectDirectory, options.isTTY, fetchImpl, log),
+      });
     }
     return 0;
   } catch (error) {

@@ -27,7 +27,9 @@ function promptHarness(answers: string[]) {
       transcript += text;
       if (text.endsWith(': ')) {
         promptCount += 1;
-        input.write(`${answers.shift() || ''}\n`);
+        const answer = answers.shift() || '';
+        if (answer === '[EOF]') input.end();
+        else input.write(`${answer}\n`);
       }
       callback();
     },
@@ -112,7 +114,37 @@ test('setup --yes is secret-safe, validates, round-trips Node env-file, and is i
   }
 });
 
-test('interactive setup quick path uses safe defaults and writes only after confirmation', async () => {
+test('--yes --start prints the READY command list but never the dashboard token', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-start-'));
+  const streams = promptHarness([]);
+  try {
+    const status = await runSetupWithOptions({
+      argv: ['--yes', '--on-chain-demo', '--start'],
+      input: streams.input,
+      output: streams.output,
+      isTTY: true,
+      projectRoot: directory,
+      startStack: async () => true,
+      fetchImpl: async () => Response.json({
+        network: 'testnet',
+        verifier: nearIntentsDefaults('testnet', true).verifier,
+      }),
+    });
+    const env = EnvFile.parse(fs.readFileSync(path.join(directory, '.env'), 'utf8'));
+    const token = parseApiCredentials(env.getValue('ASGUARD_API_CREDENTIALS'))
+      .find((credential) => credential.id === 'dashboard-local')?.token;
+    assert.equal(status, 0, streams.transcript);
+    assert.match(streams.transcript, /ASGUARD dev stack is ready\./);
+    assert.match(streams.transcript, /Demo commands:/);
+    assert.match(streams.transcript, /npm run demo:onchain/);
+    assert.ok(!token || !streams.transcript.includes(token));
+  } finally {
+    streams.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('interactive setup quick path uses safe defaults and asks before startup', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-quick-'));
   const prompts = promptHarness(['', '', '', '']);
   try {
@@ -123,6 +155,8 @@ test('interactive setup quick path uses safe defaults and writes only after conf
       isTTY: true,
       projectRoot: directory,
       fetchImpl: async () => new Response('', { status: 503 }),
+      startStack: async () => true,
+      openBrowser: async () => true,
       now: () => 1_700_000_000_000,
     });
     assert.equal(status, 0, prompts.transcript);
@@ -132,8 +166,12 @@ test('interactive setup quick path uses safe defaults and writes only after conf
     assert.equal(fs.existsSync(path.join(directory, '.env')), true);
     assert.equal(fs.existsSync(path.join(directory, '.asguard', 'dashboard-token.txt')), true);
     const config = EnvFile.parse(fs.readFileSync(path.join(directory, '.env'), 'utf8'));
-    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');
-    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'false');
+    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'true');
+    assert.equal(nearDemoKeyMatches(
+      config.getValue('ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY') || '',
+      config.getValue('ASGUARD_DEMO_TIDEPOOL_ACCOUNT_ID') || '',
+    ), true);
+    assert.equal(config.getValue('ASGUARD_DEMO_TIDEPOOL_FAUCET'), 'true');
     assert.equal(prompts.transcript.includes('Configuration was not written.'), false);
   } finally {
     prompts.input.end();
@@ -143,7 +181,7 @@ test('interactive setup quick path uses safe defaults and writes only after conf
 
 test('interactive setup cancellation leaves the project untouched', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-cancel-'));
-  const prompts = promptHarness(['n']);
+  const prompts = promptHarness(['[EOF]']);
   try {
     const status = await runSetupWithOptions({
       argv: [],
@@ -153,7 +191,7 @@ test('interactive setup cancellation leaves the project untouched', async () => 
       projectRoot: directory,
       fetchImpl: async () => { throw new Error('offline'); },
     });
-    assert.equal(status, 0);
+    assert.equal(status, 1);
     assert.equal(fs.existsSync(path.join(directory, '.env')), false);
     assert.equal(fs.existsSync(path.join(directory, '.asguard')), false);
   } finally {
@@ -186,6 +224,32 @@ test('--yes --on-chain-demo enables only a valid testnet wallet without exposing
     assert.equal(nearDemoKeyMatches(privateKey, accountId), true);
     assert.equal(streams.transcript.includes(privateKey), false);
     assert.equal(streams.transcript.includes('Setup complete.'), true);
+  } finally {
+    streams.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('--yes --open starts only when explicit and never launches a browser without a TTY', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-open-'));
+  const streams = promptHarness([]);
+  let starts = 0;
+  let opens = 0;
+  try {
+    const status = await runSetupWithOptions({
+      argv: ['--yes', '--open'],
+      input: streams.input,
+      output: streams.output,
+      isTTY: false,
+      projectRoot: directory,
+      startStack: async () => { starts += 1; return true; },
+      openBrowser: async () => { opens += 1; return true; },
+      fetchImpl: async () => new Response(null, { status: 200 }),
+    });
+    assert.equal(status, 0, streams.transcript);
+    assert.equal(starts, 1);
+    assert.equal(opens, 0);
+    assert.match(streams.transcript, /No interactive graphical browser is available/);
   } finally {
     streams.input.end();
     fs.rmSync(directory, { recursive: true, force: true });

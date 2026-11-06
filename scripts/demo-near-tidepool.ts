@@ -6,9 +6,10 @@ import { normalizeNearIntent } from '../server/aos/nearIntent';
 import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 import { createNearRawEd25519Signer } from './nearRawSigner';
 import { runDemo } from './demo-common';
+import { resolveTidepoolMode } from './tidepool-mode';
 import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteRequest } from './tidepool-client';
 
-const mode = process.argv[2] || 'approve';
+const requestedMode = process.argv[2];
 const AGENT_ID = 'asguard-tidepool-testnet-demo';
 const APPROVAL_AMOUNT_USD_CAP = 2;
 const QUOTE_AMOUNT = '100000'; // 0.1 USDC (6 decimals)
@@ -54,8 +55,8 @@ function tamperIntent(input: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-void runDemo(`demo:near:tidepool:${mode}`, async (config) => {
-  if (mode !== 'approve' && mode !== 'tamper') throw new Error('Usage: npm run demo:near:tidepool:approve | npm run demo:near:tidepool:tamper.');
+void runDemo(`demo:near:tidepool:${requestedMode || 'approve'}`, async (config) => {
+  const mode = resolveTidepoolMode(requestedMode);
   if (config.network !== 'near:testnet') throw new Error('Tidepool demos are testnet-only; no mainnet quote or settlement is allowed.');
   const tidepoolDefaults = nearIntentsDefaults('testnet', true);
   if (config.intentsApiUrl.replace(/\/$/, '') !== TIDEPOOL_TESTNET_URL
@@ -63,7 +64,11 @@ void runDemo(`demo:near:tidepool:${mode}`, async (config) => {
     throw new Error(`This Tidepool demo needs Tidepool URL/verifier configuration. Re-run npm run setup and opt into the Tidepool demo key, or set ASGUARD_NEAR_INTENTS_API_URL=${TIDEPOOL_TESTNET_URL} and ASGUARD_NEAR_INTENTS_VERIFIER=${tidepoolDefaults.verifier} manually.`);
   }
 
-  const settle = mode === 'approve' && process.env.ASGUARD_DEMO_TIDEPOOL_SETTLE === 'true';
+  const settle = mode === 'onchain'
+    || (mode === 'approve' && process.env.ASGUARD_DEMO_TIDEPOOL_SETTLE === 'true');
+  if (mode === 'onchain' && process.env.ASGUARD_DEMO_TIDEPOOL_SETTLE !== 'true') {
+    throw new Error('The on-chain demo requires ASGUARD_DEMO_TIDEPOOL_SETTLE=true. Run npm run setup -- --on-chain-demo first.');
+  }
   if (mode === 'tamper' && process.env.ASGUARD_DEMO_TIDEPOOL_SETTLE === 'true') {
     console.log('Tamper mode never signs or submits, even when Tidepool settlement is enabled.');
   }
@@ -165,7 +170,16 @@ void runDemo(`demo:near:tidepool:${mode}`, async (config) => {
       ? submission.tidepool as Record<string, unknown> : {};
     console.log(JSON.stringify({ status: 'submitted', tx_hash: tidepool.txHash ?? submission.intentHash ?? null, explorer_url: tidepool.explorerUrl ?? null }, null, 2));
     const finalStatus = await client.waitForFinalStatus(quoteResponse.quote.depositAddress, { timeoutMs: 180_000, pollIntervalMs: 3_000 });
-    console.log(JSON.stringify({ status: finalStatus.status, updated_at: finalStatus.updatedAt ?? null, swap_details: finalStatus.swapDetails ?? null }, null, 2));
+    console.log(JSON.stringify({
+      status: finalStatus.status,
+      updated_at: finalStatus.updatedAt ?? null,
+      swap_details: finalStatus.swapDetails ?? null,
+      tx_hash: tidepool.txHash ?? submission.intentHash ?? null,
+      explorer_url: tidepool.explorerUrl ?? null,
+    }, null, 2));
+    if (finalStatus.status === 'SUCCESS') {
+      console.log('On-chain Tidepool testnet demo completed successfully.');
+    }
     if (finalStatus.status !== 'SUCCESS') throw new Error(`Tidepool swap finished with ${finalStatus.status}; inspect the Tidepool status response and testnet explorer.`);
   });
 });
