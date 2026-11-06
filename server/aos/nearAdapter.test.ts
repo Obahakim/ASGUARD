@@ -9,7 +9,7 @@ test('NEAR adapter defaults to FastNear for testnet and preserves configured ove
   try {
     process.env.ASGUARD_NEAR_NETWORK = 'testnet';
     delete process.env.ASGUARD_NEAR_RPC_URL;
-    assert.equal(new NearAdapter({ network: 'testnet' }).rpcUrl, 'https://rpc.fastnear.com');
+    assert.equal(new NearAdapter({ network: 'testnet' }).rpcUrl, 'https://rpc.testnet.fastnear.com');
     process.env.ASGUARD_NEAR_RPC_URL = 'https://override.example/rpc';
     assert.equal(new NearAdapter({ network: 'testnet' }).rpcUrl, 'https://override.example/rpc');
     assert.equal(new NearAdapter({ network: 'testnet', rpcUrl: 'https://custom.example/rpc' }).rpcUrl, 'https://custom.example/rpc');

@@ -8,7 +8,7 @@ test('NEAR RPC defaults to FastNear on testnet and preserves explicit overrides'
   try {
     process.env.ASGUARD_NEAR_NETWORK = 'testnet';
     delete process.env.ASGUARD_NEAR_RPC_URL;
-    assert.deepEqual(getNearRpcEndpoints('testnet'), ['https://rpc.fastnear.com/']);
+    assert.deepEqual(getNearRpcEndpoints('testnet'), ['https://rpc.testnet.fastnear.com/']);
     assert.deepEqual(getNearRpcEndpoints('testnet', 'https://custom.example/rpc'), ['https://custom.example/rpc']);
     process.env.ASGUARD_NEAR_RPC_URL = 'https://override.example/rpc';
     assert.deepEqual(getNearRpcEndpoints('testnet'), ['https://override.example/rpc']);

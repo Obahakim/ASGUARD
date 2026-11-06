@@ -58,6 +58,13 @@ export interface TidepoolClientOptions {
   timeoutMs?: number;
 }
 
+export class TidepoolApiError extends Error {
+  constructor(message: string, readonly status: number, readonly pathname: string) {
+    super(message);
+    this.name = 'TidepoolApiError';
+  }
+}
+
 export class TidepoolClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -94,7 +101,7 @@ export class TidepoolClient {
     if (!response.ok) {
       const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
       const message = typeof record.message === 'string' ? record.message : typeof record.error === 'string' ? record.error : `HTTP ${response.status}`;
-      throw new Error(`Tidepool ${pathname} failed (${message}).`);
+      throw new TidepoolApiError(`Tidepool ${pathname} failed (${message}).`, response.status, pathname);
     }
     if (body === undefined) throw new Error(`Tidepool ${pathname} returned invalid JSON.`);
     return body as T;

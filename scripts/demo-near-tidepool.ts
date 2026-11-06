@@ -7,7 +7,7 @@ import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 import { createNearRawEd25519Signer } from './nearRawSigner';
 import { runDemo } from './demo-common';
 import { resolveTidepoolMode } from './tidepool-mode';
-import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteRequest } from './tidepool-client';
+import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolApiError, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteRequest } from './tidepool-client';
 
 const requestedMode = process.argv[2];
 const AGENT_ID = 'asguard-tidepool-testnet-demo';
@@ -15,6 +15,28 @@ const APPROVAL_AMOUNT_USD_CAP = 2;
 const QUOTE_AMOUNT = '100000'; // 0.1 USDC (6 decimals)
 const ORIGIN_ASSET = 'nep141:usdc.tidepool-sandbox.testnet';
 const DESTINATION_ASSET = 'nep141:wnear.tidepool-sandbox.testnet';
+const TESTNET_RPC_URL = 'https://rpc.testnet.fastnear.com';
+
+async function hasEnoughUsdc(accountId: string): Promise<boolean> {
+  const argsBase64 = Buffer.from(JSON.stringify({ account_id: accountId })).toString('base64');
+  const response = await fetch(TESTNET_RPC_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'asguard-tidepool-funding-check', method: 'query', params: {
+      request_type: 'call_function', finality: 'final', account_id: 'usdc.tidepool-sandbox.testnet',
+      method_name: 'ft_balance_of', args_base64: argsBase64,
+    } }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  const body = await response.json() as { result?: { result?: unknown }; error?: { message?: string } };
+  if (!response.ok || body.error || !Array.isArray(body.result?.result)
+    || body.result.result.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+    throw new Error(body.error?.message || `NEAR testnet USDC balance query failed (HTTP ${response.status}).`);
+  }
+  const balance = Buffer.from(body.result.result).toString('utf8');
+  if (!/^\d+$/.test(balance)) throw new Error('NEAR testnet USDC balance response was invalid.');
+  return BigInt(balance) >= BigInt(QUOTE_AMOUNT);
+}
 
 function ephemeralSignerId(): string {
   const pair = generateKeyPairSync('ed25519');
@@ -92,8 +114,22 @@ void runDemo(`demo:near:tidepool:${requestedMode || 'approve'}`, async (config) 
   console.log(`Registered demo account ${signerId} with ASGUARD before requesting a swap approval.`);
 
   if (settle && process.env.ASGUARD_DEMO_TIDEPOOL_FAUCET === 'true') {
-    const funding = await client.requestFaucet({ accountId: signerId, mode: 'intents', assets: ['USDC'] });
-    console.log(`Tidepool intents faucet requested: ${JSON.stringify(funding)}`);
+    let alreadyFunded = false;
+    try { alreadyFunded = await hasEnoughUsdc(signerId); } catch { /* A live faucet response can still fund the account if RPC is temporarily unavailable. */ }
+    if (alreadyFunded) {
+      console.log('Tidepool faucet skipped: demo account already has enough USDC for this swap.');
+    } else {
+      try {
+        const funding = await client.requestFaucet({ accountId: signerId, mode: 'intents', assets: ['USDC'] });
+        console.log(`Tidepool intents faucet requested: ${JSON.stringify(funding)}`);
+      } catch (error) {
+        if (!(error instanceof TidepoolApiError) || error.status !== 429) throw error;
+        if (!await hasEnoughUsdc(signerId)) {
+          throw new Error('Tidepool faucet rate limit reached and the demo account does not have enough USDC. Wait for the faucet limit to reset or fund this testnet account, then retry.');
+        }
+        console.log('Tidepool faucet rate limit reached; continuing because the demo account already has enough USDC.');
+      }
+    }
   }
 
   const quoteRequest: TidepoolQuoteRequest = {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteResponse } from './tidepool-client';
+import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolApiError, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteResponse } from './tidepool-client';
 
 const response: TidepoolQuoteResponse = {
   correlationId: 'quote-123', timestamp: '2030-01-01T00:00:00.000Z', signature: 'ed25519:signature',
@@ -64,7 +64,8 @@ test('Tidepool intent signing, submission, and intents faucet use documented bod
 
 test('Tidepool failures are bounded and mapped to clear errors', async () => {
   const unavailable = new TidepoolClient({ fetchImpl: async () => Response.json({ message: 'rate limited' }, { status: 429 }) });
-  await assert.rejects(unavailable.listTokens(), /Tidepool \/v0\/tokens failed \(rate limited\)/);
+  await assert.rejects(unavailable.listTokens(), (error: unknown) => error instanceof TidepoolApiError
+    && error.status === 429 && error.pathname === '/v0/tokens' && /rate limited/.test(error.message));
   const timedOut = new TidepoolClient({ timeoutMs: 100, fetchImpl: async (_input, init) => await new Promise((_resolve, reject) => {
     init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
   }) });

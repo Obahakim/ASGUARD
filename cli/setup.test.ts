@@ -342,7 +342,7 @@ test('--yes applies official endpoint defaults and never retains a Tidepool demo
     const result = runSetup(['--yes', '--env', envPath, '--key-dir', path.join(directory, '.asguard')]);
     assert.equal(result.status, 0, result.stderr);
     const configured = EnvFile.parse(fs.readFileSync(envPath, 'utf8'));
-    assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.fastnear.com');
+    assert.equal(configured.getValue('ASGUARD_NEAR_RPC_URL'), 'https://rpc.testnet.fastnear.com');
     assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_API_URL'), 'https://1click.chaindefuser.com');
     assert.equal(configured.getValue('ASGUARD_NEAR_INTENTS_VERIFIER'), 'intents.near');
     assert.equal(configured.getValue('ASGUARD_DEMO_TIDEPOOL_SETTLE'), 'false');

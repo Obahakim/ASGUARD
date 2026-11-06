@@ -15,6 +15,6 @@ test('endpoint defaults use official 1Click unless testnet Tidepool demo is enab
   assert.deepEqual(nearIntentsDefaults('mainnet', true), {
     apiUrl: 'https://1click.chaindefuser.com', verifier: 'intents.near',
   });
-  assert.equal(nearRpcDefault('testnet'), 'https://rpc.fastnear.com');
+  assert.equal(nearRpcDefault('testnet'), 'https://rpc.testnet.fastnear.com');
   assert.equal(nearRpcDefault('mainnet'), 'https://rpc.mainnet.near.org');
 });
