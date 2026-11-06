@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { AuditChain, AuditChainIntegrityError } from './auditChain';
 import { JsonProfilePersistence } from './profileStore';
+import { AgentVerificationStore } from './agentVerification';
 import { NearWalletWatchStore } from './nearWalletWatch';
 import { PolicyStore } from './policyStore';
 import { resolveStatePath } from './stateDir';
@@ -61,6 +62,7 @@ test('audit, profile, wallet, and policy stores use the state directory', () => 
     'ASGUARD_STATE_DIR',
     'ASGUARD_AUDIT_CHAIN_PATH',
     'ASGUARD_AGENT_PROFILES_PATH',
+    'ASGUARD_AGENT_VERIFICATIONS_PATH',
     'ASGUARD_WATCHED_WALLETS_PATH',
     'ASGUARD_POLICY_PATH',
     'ASGUARD_AUDIT_KEY',
@@ -76,6 +78,9 @@ test('audit, profile, wallet, and policy stores use the state directory', () => 
 
       new JsonProfilePersistence().save([]);
       assert.equal(fs.existsSync(path.join(directory, 'agent_profiles.json')), true);
+
+      new AgentVerificationStore().set('agent-1', 'verified', 'operator');
+      assert.equal(fs.existsSync(path.join(directory, 'agent_verifications.json')), true);
 
       const watches = new NearWalletWatchStore();
       watches.register({ agent_id: 'agent-1', account_id: 'bot.near', network: 'near:testnet' });

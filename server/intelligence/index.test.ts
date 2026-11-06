@@ -46,6 +46,21 @@ test('provider output is constrained to known informational signals', async () =
   assert.deepEqual(result?.signals.map((signal) => signal.code), ['possible_bypass']);
 });
 
+test('NEAR AI receives the saved agent verification status as analysis context', async () => {
+  let analyzedInput: Record<string, unknown> | undefined;
+  const service = createIntelligenceService({
+    enabled: true, endpoint: 'https://api.near.ai/v1/chat/completions', apiKey: 'test-key', model: 'test-model',
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      analyzedInput = JSON.parse(request.messages[2].content) as Record<string, unknown>;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ summary: 'Review complete.', signals: [] }) } }] }), { status: 200 });
+    },
+  });
+  const agentVerification = { status: 'verified', updated_at: '2026-01-01T00:00:00.000Z' };
+  await service.analyze({ kind: 'approval', agent_id: 'agent-a', details: { agent_verification: agentVerification } });
+  assert.deepEqual((analyzedInput?.details as Record<string, unknown>).agent_verification, agentVerification);
+});
+
 test('verified USD context suppresses the unpriced-token signal', async () => {
   const service = createIntelligenceService({ enabled: true });
   const result = await service.analyze({ kind: 'approval', agent_id: 'agent-a', details: { verified_amount_usd: 2 } });

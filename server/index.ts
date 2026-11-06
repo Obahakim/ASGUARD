@@ -45,6 +45,7 @@ import { verifyFinalizedNearTransfer } from './submissions/report';
 import { normalizeNearTransfer } from './aos/nearTransfer';
 import { getApprovalPublicKey } from './attestationConfig';
 import { buildPublicKeyResponse } from './attestationPublicKey';
+import { agentVerificationStore, agentVerificationStatuses, type AgentVerificationStatus } from './agentVerification';
 
 // Configuration
 const PORT = process.env.ASGUARD_PORT || 8080;
@@ -118,13 +119,19 @@ const walletWatcher = new NearWalletWatcher({
     logger.broadcastEvent(event);
     if (!matchedIntent && reportableOutbound) {
       const observed = { ...activity, matched_approval: false, prevention_claim: false };
+      const verification = agentVerificationStore.getIntelligenceContext(activity.agent_id);
       auditAnchor.record('unmatched_wallet_activity', observed);
       const anomaly: Event = { type: 'anomaly_detected', timestamp: activity.observed_at, id: `unmatched_${crypto.randomUUID()}`,
         agent_id: activity.agent_id, anomaly_type: 'unmatched_public_activity', confidence_score: 0.8,
         details: { activity, matched_approval: false, prevention_claim: false, explanation: 'Observed activity did not match a reported approved transaction; this does not mean ASGUARD prevented it.' } };
       bridge.broadcastEvent(anomaly);
       logger.broadcastEvent(anomaly);
-      void intelligence.analyze({ kind: 'watch_activity', agent_id: activity.agent_id, details: observed, matched_approval: false })
+      void intelligence.analyze({
+        kind: 'watch_activity',
+        agent_id: activity.agent_id,
+        details: { ...observed, agent_verification: verification },
+        matched_approval: false,
+      })
         .then((result) => {
           if (!result) return;
           auditAnchor.record('wallet_activity_intelligence', { watch_id: activity.watch_id, agent_id: activity.agent_id, ...result });
@@ -332,6 +339,43 @@ app.post('/api/agents/connect', apiAuthenticator.requireAnyRole('runtime', 'admi
     res.status(201).json({ success: true, ...connectAgent(req.body as Record<string, unknown>, req.asguardIdentity) });
   } catch (error) {
     res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid agent connection.' });
+  }
+});
+
+app.get('/api/agents/verification', apiAuthenticator.requireAnyRole('admin', 'operator', 'auditor'), (_req: Request, res: Response) => {
+  res.json({ success: true, verifications: agentVerificationStore.list() });
+});
+
+app.put('/api/agents/verification', apiAuthenticator.requireAnyRole('admin', 'operator'), (req: Request, res: Response) => {
+  if (!req.asguardIdentity) { res.status(401).json({ success: false, error: 'Authentication required.' }); return; }
+  const body = req.body as Record<string, unknown> | undefined;
+  const agent_id = body?.agent_id;
+  const status = body?.status;
+  if (typeof agent_id !== 'string' || !agent_id.trim() || agent_id.length > 128
+    || /[\u0000-\u001f\u007f]/.test(agent_id)
+    || !agentVerificationStatuses.includes(status as AgentVerificationStatus)) {
+    res.status(400).json({ success: false, error: 'A valid agent ID and status (unverified, verified, or decoy) are required.' });
+    return;
+  }
+  try {
+    const verification = agentVerificationStore.set(agent_id, status as AgentVerificationStatus, req.asguardIdentity.id);
+    auditAnchor.record('agent_verification_updated', { ...verification, actor_id: req.asguardIdentity.id });
+    const event: Event = {
+      type: 'audit_log',
+      timestamp: verification.updated_at,
+      id: `agent_verification_${crypto.randomUUID()}`,
+      agent_id,
+      action: `Agent marked ${verification.status}`,
+      resource: agent_id,
+      status: 'success',
+      details: verification,
+    };
+    bridge.broadcastEvent(event);
+    logger.broadcastEvent(event);
+    res.json({ success: true, verification });
+  } catch (error) {
+    logger.error('[Server] Could not update agent verification:', { agent_id, error: String(error) });
+    res.status(500).json({ success: false, error: 'Could not save agent verification.' });
   }
 });
 

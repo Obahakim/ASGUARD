@@ -179,6 +179,28 @@ test('interactive setup quick path uses safe defaults and asks before startup', 
   }
 });
 
+test('advanced setup no longer asks for a wallet-watch demo account', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-no-wallet-id-'));
+  const prompts = promptHarness(Array.from({ length: 100 }, () => 'n'));
+  try {
+    const status = await runSetupWithOptions({
+      argv: ['--advanced'],
+      input: prompts.input,
+      output: prompts.output,
+      isTTY: true,
+      projectRoot: directory,
+      fetchImpl: async () => new Response('', { status: 503 }),
+      startStack: async () => false,
+      openBrowser: async () => false,
+    });
+    assert.equal(status, 0, prompts.transcript);
+    assert.doesNotMatch(prompts.transcript, /Configure public wallet-watch demo account|ASGUARD_WATCH_DEMO_ACCOUNT/);
+  } finally {
+    prompts.input.end();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('interactive setup cancellation leaves the project untouched', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-setup-cancel-'));
   const prompts = promptHarness(['[EOF]']);
@@ -445,7 +467,7 @@ test('--reset-state archives each configured state file rather than deleting it'
   const envPath = path.join(directory, '.env');
   const stateDirectory = path.join(directory, 'state');
   const keyDirectory = path.join(directory, '.asguard');
-  const fileNames = ['audit_chain.json', 'transaction_intents.json', 'agent_profiles.json', 'watched_wallets.json', 'asguard_policy.json'];
+  const fileNames = ['audit_chain.json', 'transaction_intents.json', 'agent_profiles.json', 'agent_verifications.json', 'watched_wallets.json', 'asguard_policy.json'];
   try {
     const env = EnvFile.parse('');
     env.setValue('ASGUARD_STATE_DIR', stateDirectory);

@@ -14,6 +14,7 @@ import { evaluateNearIntentPolicy, normalizeNearIntent } from './aos/nearIntent'
 import { evaluateNearTransferPolicy, normalizeNearTransfer } from './aos/nearTransfer';
 import { nearAdapter } from './aos/nearAdapter';
 import { intelligence } from './intelligence';
+import { agentVerificationStore, type AgentVerificationStore } from './agentVerification';
 
 const responseCache = new Map<string, { binding: string; response: SignApprovalResponse }>();
 const requestResults = new Map<string, SignApprovalResponse>();
@@ -24,11 +25,25 @@ export function getApprovalResult(requestId: string): SignApprovalResponse | und
   return pending ? { status:'pending_hitl', request_id:requestId, intent_id:String(pending.context.intent_id ?? ''), reason:'human_approval_required' } : undefined;
 }
 
-export async function requestSignApproval(raw: Record<string, unknown>, identity: ApiIdentity, engine: AnomalyEngine, broadcast: (event: unknown) => void): Promise<SignApprovalResponse> {
+export async function requestSignApproval(
+  raw: Record<string, unknown>,
+  identity: ApiIdentity,
+  engine: AnomalyEngine,
+  broadcast: (event: unknown) => void,
+  verificationStore: AgentVerificationStore = agentVerificationStore,
+): Promise<SignApprovalResponse> {
   const input = raw as Partial<SignApprovalRequest>;
   try { validateApprovalRequest(input); }
   catch (error) { auditAnchor.record('approval_request_rejected', { agent_id: input.agent_id, actor_id: identity.id, reason: error instanceof Error ? error.message : 'invalid_request' }); throw error; }
   const request = input as SignApprovalRequest;
+  const blockedAgentWarning = (): string | undefined => verificationStore.get(request.agent_id).status === 'decoy'
+    ? 'This agent is flagged as a potential decoy. Check the agent identity; no approval attestation was issued.'
+    : undefined;
+  const initialWarning = blockedAgentWarning();
+  if (initialWarning) {
+    auditAnchor.record('agent_attestation_blocked_decoy', { agent_id: request.agent_id, wallet_id: request.wallet_id, actor_id: identity.id });
+    return { status: 'rejected', reason: 'agent_flagged_as_decoy', agent_warning: initialWarning };
+  }
   const nearIntent = request.payload_domain === 'near-intent'
     ? normalizeNearIntent(request.near_intent, Date.now(), nearAdapter.intentsVerifier)
     : undefined;
@@ -154,6 +169,7 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
     details: {
       action: request.action, risk_level: request.risk_level, verified_amount_usd: amountUsd,
       anomaly_score: evaln.anomaly_score, rules_triggered: evaln.rules_triggered,
+      agent_verification: verificationStore.getIntelligenceContext(request.agent_id),
       ...(nearIntent ? { token_facts: {
         value_out_usd: verifiedUsdValue,
         value_in_usd: receivedUsdValue,
@@ -180,6 +196,12 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
   const preflight = { kind: nearIntent ? 'near_intent_policy_and_price' as const : 'approval_policy' as const, status: requiresHuman ? 'review_required' as const : 'passed' as const, checked_at: new Date().toISOString(), reasons: preflightReasons };
   recordPreflight(intent.id, preflight);
   if (!requiresHuman) {
+    const currentWarning = blockedAgentWarning();
+    if (currentWarning) {
+      transitionTransactionIntent(intent.id, 'rejected');
+      auditAnchor.record('agent_attestation_blocked_decoy', { intent_id: intent.id, agent_id: request.agent_id, wallet_id: request.wallet_id, actor_id: identity.id });
+      return cacheResponse({ status: 'rejected', intent_id: intent.id, reason: 'agent_flagged_as_decoy', agent_warning: currentWarning, anomaly: evaln, preflight });
+    }
     transitionTransactionIntent(intent.id,'approved'); const attestation=issue('approve_once'); auditAnchor.record('approval_issued',{intent_id:intent.id,agent_id:request.agent_id,score:evaln.anomaly_score,path:evaln.action,network,chain:request.chain??chain,payload_hash:request.payload_hash,payload_domain:request.payload_domain,derivation_path:request.derivation_path,signer_contract:request.signer_contract,intent_type:nearIntent?.intent.intent_type??request.intent_type});
     const response:SignApprovalResponse={status:'approved',intent_id:intent.id,decision_id:attestation.decision_id,attestation,anomaly:evaln,preflight};return cacheResponse(response);
   }
@@ -200,10 +222,17 @@ export async function requestSignApproval(raw: Record<string, unknown>, identity
         transitionTransactionIntent(intent.id,'rejected');
         finalResponse = {status:'rejected',intent_id:intent.id,request_id:event.request_id,reason:decision.reason === 'Request expired' ? 'timeout_deny' : decision.reason ?? 'human_denied',anomaly:evaln,preflight};
       } else {
-        const attestation=issue(decision.action==='allow_session'?'approve_session':'approve_once');
-        transitionTransactionIntent(intent.id,'approved');
-        auditAnchor.record('approval_issued',{intent_id:intent.id,agent_id:request.agent_id,request_id:event.request_id,actor_id:decision.actor_id,decision:decision.action,network,payload_hash:request.payload_hash,payload_domain:request.payload_domain,derivation_path:request.derivation_path,signer_contract:request.signer_contract,intent_type:nearIntent?.intent.intent_type??request.intent_type});
-        finalResponse={status:'approved',intent_id:intent.id,request_id:event.request_id,decision_id:attestation.decision_id,attestation,anomaly:evaln,preflight};
+        const currentWarning = blockedAgentWarning();
+        if (currentWarning) {
+          transitionTransactionIntent(intent.id,'rejected');
+          auditAnchor.record('agent_attestation_blocked_decoy',{intent_id:intent.id,agent_id:request.agent_id,request_id:event.request_id,actor_id:decision.actor_id});
+          finalResponse={status:'rejected',intent_id:intent.id,request_id:event.request_id,reason:'agent_flagged_as_decoy',agent_warning:currentWarning,anomaly:evaln,preflight};
+        } else {
+          const attestation=issue(decision.action==='allow_session'?'approve_session':'approve_once');
+          transitionTransactionIntent(intent.id,'approved');
+          auditAnchor.record('approval_issued',{intent_id:intent.id,agent_id:request.agent_id,request_id:event.request_id,actor_id:decision.actor_id,decision:decision.action,network,payload_hash:request.payload_hash,payload_domain:request.payload_domain,derivation_path:request.derivation_path,signer_contract:request.signer_contract,intent_type:nearIntent?.intent.intent_type??request.intent_type});
+          finalResponse={status:'approved',intent_id:intent.id,request_id:event.request_id,decision_id:attestation.decision_id,attestation,anomaly:evaln,preflight};
+        }
       }
       cacheResponse(finalResponse);requestResults.set(event.request_id,finalResponse);
     } catch(error) {

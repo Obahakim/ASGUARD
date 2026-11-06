@@ -42,6 +42,7 @@ const stateFiles = [
   ['audit_chain.json', 'ASGUARD_AUDIT_CHAIN_PATH'],
   ['transaction_intents.json', 'ASGUARD_TRANSACTION_INTENTS_PATH'],
   ['agent_profiles.json', 'ASGUARD_AGENT_PROFILES_PATH'],
+  ['agent_verifications.json', 'ASGUARD_AGENT_VERIFICATIONS_PATH'],
   ['watched_wallets.json', 'ASGUARD_WATCHED_WALLETS_PATH'],
   ['asguard_policy.json', 'ASGUARD_POLICY_PATH'],
 ] as const;
@@ -695,16 +696,6 @@ async function configureAdvanced(
       env.setValue('ASGUARD_AI_API_KEY', apiKey);
       env.setValue('ASGUARD_AI_MODEL', model);
     }
-  }
-
-  log(`Current public wallet-watch account: ${env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '(not configured)'}.`);
-  if (await prompter.confirm('Configure public wallet-watch demo account?', false)) {
-    const account = await prompter.ask('ASGUARD_WATCH_DEMO_ACCOUNT (leave empty to skip)', {
-      default: env.getValue('ASGUARD_WATCH_DEMO_ACCOUNT') || '',
-      validate: (value) => !value || validateAccount(value) ? undefined : 'Enter a valid public NEAR account ID, or leave empty to skip.',
-    });
-    if (account) env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', account);
-    else env.setValue('ASGUARD_WATCH_DEMO_ACCOUNT', '');
   }
 
   log('Current webhook alert URLs are hidden.');

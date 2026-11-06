@@ -281,6 +281,7 @@ export interface SignApprovalResponse {
 	attestation?: ApprovalAttestation; reason?: string; anomaly?: EvaluationResult; request_id?: string;
 	preflight?: TransactionPreflight;
 	intelligence?: IntelligenceResult;
+	agent_warning?: string;
 }
 export interface NotifierAlert {
 	agent_id: string; score: number; action: string; amount_usd?: number; request_id: string;
