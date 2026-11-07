@@ -126,7 +126,7 @@ function SetupPage() {
             ['01 · Install', 'npm install'],
             ['02 · Configure and start', 'npm run setup\nnpm run dev\n# backend :8080 · dashboard :3000\nSetup can optionally create a Tidepool testnet demo key, enable settlement/faucet, start the stack, and open the browser.'],
             ['03 · Sign in', 'Open http://localhost:3000 and use the dashboard token at .asguard/dashboard-token.txt.'],
-            ['04 · Run demos', 'Use the demo grid below. Resolve HITL requests from Approvals.'],
+            ['04 · Run demos', 'Use the demo grid below. Resolve HITL requests in the Operations approval queue.'],
             ['05 · Agent host', 'npm run connect; then call connectAgent and wrap signing in withAsguardApproval.'],
             ['Fallback config', 'If needed, use .env.example as a reference. The setup wizard is the primary configuration path.'],
           ].map(([title, text]) => <div key={title} className="rounded-xl border p-4"><b className="text-[10px]">{title}</b><pre className="mt-2 whitespace-pre-wrap break-words text-[9px] leading-4 text-slate-600">{text}</pre></div>)}

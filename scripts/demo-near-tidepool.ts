@@ -5,6 +5,7 @@ import { assertApprovedThenSignIntent } from '../server/approvalAttestation';
 import { normalizeNearIntent } from '../server/aos/nearIntent';
 import { nearIntentsDefaults } from '../server/aos/nearIntentsConfig';
 import { createNearRawEd25519Signer } from './nearRawSigner';
+import { parseNearFunctionCallStringResult } from './nearFunctionResult';
 import { runDemo } from './demo-common';
 import { resolveTidepoolMode } from './tidepool-mode';
 import { assertGeneratedSwapTransfer, buildTidepoolNearIntent, TidepoolApiError, TidepoolClient, TIDEPOOL_TESTNET_URL, type TidepoolQuoteRequest } from './tidepool-client';
@@ -29,12 +30,10 @@ async function hasEnoughUsdc(accountId: string): Promise<boolean> {
     signal: AbortSignal.timeout(8_000),
   });
   const body = await response.json() as { result?: { result?: unknown }; error?: { message?: string } };
-  if (!response.ok || body.error || !Array.isArray(body.result?.result)
-    || body.result.result.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+  if (!response.ok || body.error) {
     throw new Error(body.error?.message || `NEAR testnet USDC balance query failed (HTTP ${response.status}).`);
   }
-  const balance = Buffer.from(body.result.result).toString('utf8');
-  if (!/^\d+$/.test(balance)) throw new Error('NEAR testnet USDC balance response was invalid.');
+  const balance = parseNearFunctionCallStringResult(body.result?.result);
   return BigInt(balance) >= BigInt(QUOTE_AMOUNT);
 }
 

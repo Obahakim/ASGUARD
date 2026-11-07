@@ -1,83 +1,134 @@
 # ASGUARD
 
-ASGUARD is a non-custodial approval and audit control plane for agent value movement. It evaluates exact unsigned payloads and issues short-lived attestations that a trusted agent host verifies before its own signer can act. ASGUARD holds no agent wallet keys, runs no solver, and does not use MPC.
+**A non-custodial approval and audit control plane for AI agents that move value on NEAR.**
 
-## Tracks and license
+ASGUARD checks an agent's exact unsigned payload, evaluates policy, and issues a short-lived attestation. The trusted agent host verifies the attestation before its own signer can act.
 
-ASGUARD's primary hackathon track is **security**; **agents** is the secondary track. The project is released under the [MIT License](LICENSE).
+**Primary track:** security · **Secondary track:** agents · **License:** [MIT](LICENSE)
 
-## Features
+## The problem
 
-- NEAR Intents preflight for supported unsigned payloads, policy checks, and price freshness.
-- Tidepool community testnet 1Click-shaped quote, approval, tamper, and optional settlement demos.
-- Chain Signatures payload and derivation binding.
-- Agent SDK with HITL polling and fail-closed attestation verification.
-- Host-reported transfer records with RPC verification; ASGUARD never signs or broadcasts.
-- Read-only wallet watch, optional NEAR AI annotate-only enrichment, setup/connect CLIs, and operator dashboard.
+An agent with access to a wallet can be manipulated by prompt injection, run away in a loop, or send funds to a look-alike address. Giving the agent an unrestricted key offers no approval boundary; moving funds into a custody vault changes who controls them.
 
-## What ASGUARD does not do
+ASGUARD keeps the signing key with the trusted agent host and provides a separate decision and audit layer. Approval is bound to the exact payload the host submitted; changing that payload invalidates the approval.
 
-ASGUARD does not custody agent keys, sign or broadcast transactions, execute swaps, operate a solver, run Chain Signatures MPC, or guarantee complete chain simulation. Tidepool is a community testnet sandbox, not an ASGUARD service or production route.
+## What ASGUARD does
 
-## Security flow
+- Preflights supported unsigned NEAR Intents payloads and evaluates policy, allowlists, risk, and price freshness.
+- Issues short-lived, Ed25519-signed approval attestations for approved payloads.
+- Provides a host-side Agent SDK that handles human-in-the-loop (HITL) polling and fails closed unless the attestation and exact payload binding verify.
+- Binds Chain Signatures requests to their unsigned payload and derivation details; it does not operate the signer or MPC.
+- Records host-reported transfers and verifies supported reports against NEAR RPC.
+- Offers read-only wallet activity monitoring, an operator dashboard, setup/connect CLIs, and optional NEAR AI annotation that cannot change policy decisions.
 
-`host submits exact unsigned payload → ASGUARD preflight/policy → approved attestation or HITL/deny → host verifies exact binding → host-owned signer callback may act`
+### Approval flow
 
-Timeouts, denials, and invalid or changed payloads fail closed. The backend keeps the attestation private key and audit HMAC key; trusted hosts need the attestation public key and runtime token. Never put host signing logic on the ASGUARD server.
+```text
+Trusted host submits exact unsigned payload
+  -> ASGUARD preflight and policy evaluation
+  -> approve with signed attestation, request HITL, or deny
+  -> host verifies signature, expiry, and exact payload binding
+  -> only then may the host's own signer callback act
+```
 
-## Quick start
+Denials, timeouts, invalid attestations, and payload changes fail closed. Keep signing logic and keys in the trusted host, not in ASGUARD or browser code.
 
-1. Install Node.js 20.9 or newer.
-2. Install dependencies: `npm install`.
-3. Run `npm run setup`. The four-prompt quick path preserves valid settings and uses safe local defaults; Tidepool wallet creation is opt-in. Use `npm run setup -- --advanced` for endpoint, AI, webhook, and demo settings, or `npm run setup -- --on-chain-demo` to explicitly prepare the testnet wallet.
-4. Run `npm run dev` (backend on port 8080 and dashboard on port 3000), or accept the final startup prompt in `npm run setup` to start it there. On Windows, setup opens a visible PowerShell window with live dev output; the same output is saved to `.asguard/dev.log`.
-5. Open [http://localhost:3000](http://localhost:3000) and sign in with the dashboard token at `.asguard/dashboard-token.txt`.
+## Judge path: run it and see the result
 
-On the Operations view, review each observed agent as **Verified**, **Unverified**, or **Flagged as decoy**. Review decisions persist in the configured ASGUARD state directory; flagged agents cannot receive approval attestations. When NEAR AI advisory is enabled, saved statuses are included as untrusted context in its analyses.
+### Start the local dashboard and backend
 
-The setup wizard's safe `--yes` mode never creates a demo wallet, enables settlement, starts the server, or opens a browser. Use `npm run setup -- --check` to validate configuration without writing; `--force` rotates local secrets and keys after interactive confirmation, while `--yes --force` explicitly requests non-interactive rotation.
+1. Install Node.js 20.9 or newer, then install dependencies:
 
-## Try the demos
+   ```sh
+   npm install
+   ```
 
-Run the stack first. Approve or deny HITL requests in the dashboard's Approvals view.
+2. Run the setup wizard:
+
+   ```sh
+   npm run setup
+   ```
+
+   The quick setup uses safe local defaults; creating a Tidepool demo wallet is optional. For advanced endpoint, AI, webhook, and demo settings, use `npm run setup -- --advanced`.
+
+3. Start the app:
+
+   ```sh
+   npm run dev
+   ```
+
+   This runs the backend at `http://localhost:8080` and dashboard at `http://localhost:3000`. If you chose to start the stack from the setup wizard, it is already running. On Windows, setup opens a PowerShell window with live output and saves the same output to `.asguard/dev.log`.
+
+4. Open [http://localhost:3000](http://localhost:3000) and sign in with the token in `.asguard/dashboard-token.txt`. Resolve pending requests in the **Operations** view's approval queue.
+
+### Run a demo
+
+With the stack running, try a command and observe the corresponding result:
 
 | Do this | See this |
 | --- | --- |
-| `npm run setup` | Local `.env`, server attestation keys, and dashboard token; optional Tidepool testnet key/settlement and optional stack/browser start. |
-| `npm run dev` | Backend at `http://localhost:8080` and dashboard at `http://localhost:3000`. |
-| `npm run demo:near:approve` | NEAR Intent preflight and the host's verified approval callback. |
-| `npm run demo:near:hitl` | A pending request to resolve in the dashboard. |
-| `npm run demo:near:block` | A rejected/expired Intent and fail-closed callback. |
-| `npm run demo:near:tidepool:approve` | A real Tidepool testnet quote and ASGUARD approval, without settlement by default. |
-| Set `ASGUARD_DEMO_TIDEPOOL_SETTLE=true`, then run `npm run demo:near:tidepool:approve` | Optional capped testnet settlement using the local host-only demo key; `ASGUARD_DEMO_TIDEPOOL_FAUCET=true` opts into Tidepool faucet requests. Setup can create this implicit account/keypair. Never use a mainnet key. |
-| `npm run demo:near:tidepool:tamper` | Post-attestation payload modification rejected by host verification; it never moves value. |
-| `npm run demo:near:approve:submit` | Opt-in testnet NEAR transfer (maximum 0.01 NEAR) and a host-reported transaction for backend verification. |
-| `npm run demo:agent-guard` | A denied callback is blocked and a verified callback is allowed. |
-| `npm run demo:watch` | Register and inspect public wallet activity. |
-| `npm run connect` | Configure an agent host with runtime credentials and the attestation public key. |
+| `npm run demo:near:approve` | NEAR Intent preflight succeeds and the host reaches its verified approval callback. |
+| `npm run demo:near:hitl` | A pending request appears in the **Operations** view's approval queue; approve or deny it to continue the demo. |
+| `npm run demo:near:block` | An expired/rejected Intent is blocked; the host callback does not run. |
+| `npm run demo:near:tidepool:approve` | A live Tidepool testnet quote is approved without signing or settling by default. |
+| `npm run demo:near:tidepool:tamper` | The host rejects a payload changed after approval; no transaction is submitted. |
+| `npm run demo:agent-guard` | The denied callback is blocked and the verified callback is allowed. |
+| `npm run demo:watch` | Public wallet activity is registered and inspected; monitoring is read-only. |
 
-Tidepool (`https://www.usetidepool.tech`) is a community free testnet 1Click-shaped API, unaffiliated with NEAR, Defuse, or official 1Click. It supplies quotes/status and may supply faucet support; it does not run ASGUARD's policy or solver. Production mainnet configuration must use official 1Click at `https://1click.chaindefuser.com` with verifier `intents.near`. ASGUARD never forces Tidepool on mainnet.
+Tidepool is a community-operated testnet service. Its quote-based demos need network access and can fail if Tidepool is unavailable; this does not prevent running the local approval demos.
 
-### Automated judge demos
+### Run the automated judge suite (no dashboard interaction)
 
-Use `npm run ci:bootstrap` to create an isolated, testnet-only `.env.ci` and `.asguard-ci/` key directory, then start the backend with `node --env-file=.env.ci --import tsx scripts/start-backend.ts`. This leaves your normal `.env` and `.asguard/` configuration untouched. Bootstrap generates random runtime/operator credentials and does not print their values. Run `npm run ci:judge-demos` in another terminal; it runs the block, HITL deny/allow, Tidepool tamper, and approval-only quote scenarios and writes redacted per-scenario logs and a summary to `asguard-ci-logs/`. The judge runner automatically responds to the matching HITL requests, so no dashboard interaction is needed.
+This suite uses an isolated `.env.ci` and `.asguard-ci/` key directory, leaving normal `.env` and `.asguard/` configuration untouched. Use two terminals from the repository root.
 
-The default run never enables settlement, requests faucet funds, or uses a demo wallet. To explicitly opt into the capped on-chain testnet scenario, run `npm run ci:bootstrap:onchain`, restart the backend with the generated `.env.ci`, set `ASGUARD_JUDGE_ONCHAIN=true` (in PowerShell: `$env:ASGUARD_JUDGE_ONCHAIN = 'true'`), then run `npm run ci:judge-demos`. This creates an ephemeral implicit testnet wallet and enables the Tidepool faucet and settlement only for that opt-in run. Faucet rate limits are accepted only if the wallet is already sufficiently funded; other faucet errors fail the scenario.
+**Terminal 1 - create CI configuration and start the backend:**
 
-GitHub Actions runs the same default scenarios on pushes to `main` and supports an optional on-chain run via the `workflow_dispatch` input. It uses generated credentials and an ephemeral testnet wallet; no repository secrets are required. Detailed results and redacted logs are uploaded as the `asguard-judge-demo-logs` artifact.
+```sh
+npm run ci:bootstrap
+node --env-file=.env.ci --import tsx scripts/start-backend.ts
+```
+
+**Terminal 2 - run the scenarios:**
+
+```sh
+npm run ci:judge-demos
+```
+
+The runner automatically answers its own matching HITL requests. It prints a per-scenario `PASS`/`FAIL`/`SKIP` result and a summary; redacted scenario logs are written to `asguard-ci-logs/`. The default suite checks block, HITL deny/allow, Tidepool tamper, and approval-only quote behavior. Settlement and faucet requests are off by default.
+
+GitHub Actions runs the default suite on pushes to `main`. A manual `workflow_dispatch` can opt in to the capped testnet settlement scenario. The workflow generates isolated credentials and uploads redacted logs as the `asguard-judge-demo-logs` artifact.
+
+### Optional testnet settlement (explicit opt-in)
+
+Settlement is not needed for the judge path above. For the local automated suite, explicitly generate an ephemeral Tidepool testnet wallet:
+
+```sh
+npm run ci:bootstrap:onchain
+```
+
+Restart the backend using the newly generated `.env.ci`. Set the opt-in flag in the second terminal, then run the suite:
+
+```sh
+ASGUARD_JUDGE_ONCHAIN=true npm run ci:judge-demos
+```
+
+In PowerShell, use `$env:ASGUARD_JUDGE_ONCHAIN = 'true'` before `npm run ci:judge-demos`. This opt-in enables the capped Tidepool testnet settlement scenario and faucet request; it is not a mainnet flow. Never use a mainnet key.
 
 ## Agent host integration
 
-Use `npm run connect` to configure the host's runtime token and attestation public key. Register the agent with `connectAgent`, then wrap every value-moving callback with `withAsguardApproval` from `asguard/agent-sdk`. Keep private signing keys in the trusted host, never in ASGUARD or browser code. The SDK verifies the attestation and exact payload before invoking the callback. See [agent-sdk/README.md](agent-sdk/README.md).
+Use `npm run connect` to configure the host's runtime token and attestation public key. In the trusted Node.js host, register the agent with `connectAgent` and wrap every value-moving signer/submission callback with `withAsguardApproval` from [`agent-sdk/README.md`](agent-sdk/README.md). The callback is reached only after SDK verification. Keep private keys in the host; ASGUARD never receives them. Do not put this SDK or signer code in browser bundles.
 
-## Configuration
+## Limits and safety boundaries
 
-The setup wizard is the primary path. See [.env.example](.env.example) for the full configuration reference and fallback. Local testnet setup uses FastNear unless `ASGUARD_NEAR_RPC_URL` is explicitly configured, with testnet failovers available unless `ASGUARD_NEAR_RPC_FAILOVER_URLS` is explicitly configured. Mainnet uses official 1Click at `https://1click.chaindefuser.com` with verifier `intents.near`; testnet judge demos use Tidepool at `https://www.usetidepool.tech` with verifier `verifier.tidepool-sandbox.testnet`. Tidepool demo settlement is testnet-only, opt-in, and uses a private key held by the demo host process; the backend strips `ASGUARD_DEMO_TIDEPOOL_PRIVATE_KEY` at startup.
+- ASGUARD never takes custody of agent keys or seed phrases, signs or broadcasts transactions, executes swaps, runs a solver, or runs Chain Signatures MPC.
+- Intents preflight is not a guarantee of full NEAR VM simulation. External quote, bridge, solver, and settlement services operate outside ASGUARD.
+- Tidepool (`https://www.usetidepool.tech`) is an unaffiliated community testnet 1Click-shaped sandbox, not a production route. Mainnet configuration uses official 1Click (`https://1click.chaindefuser.com`) with verifier `intents.near`; testnet Tidepool demos use `verifier.tidepool-sandbox.testnet`.
+- Wallet watch is public, read-only monitoring; it does not block chain execution or guarantee attribution. Host-reported transaction verification is supported only for the documented report paths.
+- Optional NEAR AI is annotate-only and cannot change allow, HITL, or deny decisions.
+- Local durable state uses atomic JSON files; Postgres is not required.
 
-Keep `.env`, `.asguard/`, and all private keys out of version control. Use HTTPS endpoints and distinct high-entropy runtime/admin credentials outside local development. Optional NEAR AI is annotate-only: it cannot change allow, HITL, or deny decisions.
+## Configuration and further reading
 
-## Operations and scope
+The setup wizard is the primary configuration path. See [`.env.example`](.env.example) for the full reference and fallback. Keep `.env`, `.asguard/`, and all private keys out of version control. Use HTTPS endpoints and distinct high-entropy runtime/admin credentials outside local development.
 
-The backend stores durable state in local atomic JSON files; it does not require Postgres. The host may report a completed transaction, and existing reporting paths verify the approved payload and chain record. Wallet watch is public, read-only monitoring and does not block chain execution or guarantee attribution. Intents preflight is not a NEAR VM simulation. ASGUARD is the approval/audit layer; Tidepool or another external service operates its own quote/settlement infrastructure.
-
-For demo details, see [docs/DEMO.md](docs/DEMO.md). For host SDK usage, see [agent-sdk/README.md](agent-sdk/README.md).
+For detailed demos, see [`docs/DEMO.md`](docs/DEMO.md). For host SDK usage, see [`agent-sdk/README.md`](agent-sdk/README.md).

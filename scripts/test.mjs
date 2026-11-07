@@ -14,7 +14,7 @@ function findTests(directory) {
   });
 }
 
-const testFiles = ['server', 'agent-sdk', 'cli']
+const testFiles = ['server', 'agent-sdk', 'cli', 'scripts']
   .flatMap((directory) => findTests(path.join(repositoryRoot, directory)))
   .map((filePath) => path.relative(repositoryRoot, filePath))
   .sort();
