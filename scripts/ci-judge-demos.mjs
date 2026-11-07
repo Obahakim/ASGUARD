@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const envPath = path.resolve(process.env.ASGUARD_CI_ENV_PATH || path.join(root, '.env.ci'));
 const keyDirectory = path.resolve(process.env.ASGUARD_CI_KEY_DIR || path.join(root, '.asguard-ci'));
-const logDirectory = path.resolve(process.env.ASGUARD_CI_LOG_DIR || path.join(root, '.asguard-ci-logs'));
+const logDirectory = path.resolve(process.env.ASGUARD_CI_LOG_DIR || path.join(root, 'asguard-ci-logs'));
 const requestedOnchain = process.env.ASGUARD_JUDGE_ONCHAIN === 'true';
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');

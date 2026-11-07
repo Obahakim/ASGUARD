@@ -36,7 +36,7 @@ npm-debug.log*
 # local ASGUARD state
 .asguard/
 .asguard-ci/
-.asguard-ci-logs/
+asguard-ci-logs/
 
 # local logs
 *.log

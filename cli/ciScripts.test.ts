@@ -8,6 +8,7 @@ import { createNearRawEd25519Signer } from '../scripts/nearRawSigner';
 
 const root = process.cwd();
 const bootstrapScript = path.join(root, 'scripts', 'ci-bootstrap-env.mjs');
+const judgeScript = path.join(root, 'scripts', 'ci-judge-demos.mjs');
 const responderScript = path.join(root, 'scripts', 'ci-hitl-responder.mjs');
 
 function runBootstrap(directory: string, onChain: boolean) {
@@ -90,4 +91,26 @@ test('HITL responder rejects an invalid action before attempting network access'
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /HITL_ACTION must be allow_once, allow_session, or deny_terminate/);
+});
+
+test('judge runner writes a summary artifact when preflight fails', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'asguard-ci-logs-'));
+  try {
+    const result = spawnSync(process.execPath, [judgeScript], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ASGUARD_CI_ENV_PATH: path.join(directory, 'missing.env'),
+        ASGUARD_CI_KEY_DIR: path.join(directory, 'keys'),
+        ASGUARD_CI_LOG_DIR: path.join(directory, 'logs'),
+      },
+    });
+    assert.equal(result.status, 1);
+    const summaryPath = path.join(directory, 'logs', 'summary.log');
+    assert.equal(fs.existsSync(summaryPath), true);
+    assert.match(fs.readFileSync(summaryPath, 'utf8'), /FAIL judge_preflight/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

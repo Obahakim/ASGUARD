@@ -85,6 +85,6 @@ jobs:
         with:
           name: asguard-judge-demo-logs
           path: |
-            .asguard-ci-logs/
+            asguard-ci-logs/
           if-no-files-found: warn
           retention-days: 14
