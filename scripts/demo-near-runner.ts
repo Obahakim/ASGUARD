@@ -108,7 +108,7 @@ export async function runNearScenario(config: DemoConfig, scenario: NearDemoScen
       expectedVerifier: config.verifier,
       idempotencyKey: `near-demo-${mode}-${randomUUID()}`,
       riskLevel,
-      expectedMaxAmountUsd: 1_000,
+      ...(typeof intent.amount_usd === 'number' ? { expectedMaxAmountUsd: 1_000 } : {}),
       pollIntervalMs: 1_000,
       timeoutMs: 180_000,
       onPendingHitl: (requestId) => console.log(`HITL pending: request_id=${requestId}; resolve it in the dashboard within 3 minutes.`),
