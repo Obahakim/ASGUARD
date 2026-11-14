@@ -21,6 +21,8 @@ npm run dev
 
 This starts the backend at `http://localhost:8080` and the dashboard at `http://localhost:3000`. Alternatively, run `npm run dev:backend` and `npm run dev:frontend` in separate terminals. Sign in with the token in `.asguard/dashboard-token.txt`; resolve human-in-the-loop (HITL) requests in the approval queue on the **Operations** view.
 
+On Windows, setup opens a visible PowerShell window when it starts the dev stack; live output is also saved to `.asguard/dev.log`.
+
 The demo scripts check backend credentials and reachability before sending a request. Missing or weak credentials, an unavailable backend, or a non-testnet configuration fail before the demo request. A low-risk request can still be sent to HITL if fresh verified price data or policy allowlists are unavailable; this is intentional fail-closed behavior.
 
 ## Core demos: do this, see this
@@ -109,13 +111,20 @@ For a local opt-in run, generate a testnet configuration with an ephemeral Tidep
 npm run ci:bootstrap:onchain
 ```
 
-Restart the backend with the newly generated `.env.ci`. Set the opt-in flag in the terminal where you run the suite:
+Restart the backend with the newly generated `.env.ci`, then run the suite with the opt-in flag:
 
+**POSIX shell**
 ```sh
 ASGUARD_JUDGE_ONCHAIN=true npm run ci:judge-demos
 ```
 
-In PowerShell, set `$env:ASGUARD_JUDGE_ONCHAIN = 'true'` first, then run `npm run ci:judge-demos`. This explicitly enables the capped testnet settlement and faucet path; it is not a mainnet flow. Never use a mainnet key.
+**PowerShell**
+```powershell
+$env:ASGUARD_JUDGE_ONCHAIN = 'true'
+npm run ci:judge-demos
+```
+
+This explicitly enables the capped testnet settlement and faucet path; it is not a mainnet flow. Never use a mainnet key.
 
 ## Multi-scenario suite
 
