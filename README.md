@@ -162,6 +162,10 @@ Use `npm run connect` to configure the host's runtime token and attestation publ
 - Optional NEAR AI is annotate-only and cannot change allow, HITL, or deny decisions.
 - Local durable state uses atomic JSON files; Postgres is not required.
 
+## Contributors
+
+ASGUARD is a solo project (team size 1). The commit history and the repository's contributors list show two GitHub accounts, `Obahakim` and `ObaPaws`, and several author-name spellings (`Oba Hakim`, `obahakim`, `ObaPaws`). All of them belong to the same person, the sole developer of this project.
+
 ## Built with
 
 TypeScript on Node.js 20.9+; Next.js and React for the dashboard; Express and `ws` for the backend API; `near-api-js`; Tailwind CSS. External services: NEAR RPC (FastNEAR, with failover endpoints), NEAR Intents 1Click (official endpoint on mainnet, the Tidepool community sandbox for testnet demos), and optional NEAR AI. Parts of this codebase were written with AI coding assistance.
